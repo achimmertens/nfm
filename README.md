@@ -3,11 +3,16 @@
 NFM is a self-hosted, personalized RSS news reader built around semantic deduplication, user-specific filtering, and click-driven ML tagging. The app aggregates feeds from multiple sources, filters and ranks articles for a user, and can serve a web UI or scheduled email digest without requiring a database.
 
 Built with FastAPI, designed to run comfortably on low-resource hardware (Raspberry Pi compatible).
+Well suited for mobile clients:
 
 <p align="center">
 <img src="doc/images/sh01.png" width="400" alt="Screenshot01">
 <img src="doc/images/sh02.png" width="400" alt="Screenshot01">
 </p>
+<p style="text-align: center;">
+To avoid copyright disputes, the article summary has been blurred...
+</p>
+
 
 ## Features
 
