@@ -4,7 +4,10 @@ NFM is a self-hosted, personalized RSS news reader built around semantic dedupli
 
 Built with FastAPI, designed to run comfortably on low-resource hardware (Raspberry Pi compatible).
 
-<p align="center"><img src="doc/images/screenshot.png" width="600" alt="Screenshot"></p>
+<p align="center">
+<img src="doc/images/sh01.png" width="400" alt="Screenshot01">
+<img src="doc/images/sh02.png" width="400" alt="Screenshot01">
+</p>
 
 ## Features
 
