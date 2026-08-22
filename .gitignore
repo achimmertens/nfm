@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# ML model artifacts (derived from clicktrack data, machine/version-specific)
+clicktrack/models/*.pkl
+clicktrack/archiv/*.jsonl
+clicktrack*.jsonl
+
+# miscellaneous
+render_data_user01.json
+docker-compose_omv.amd64.yml
+secrets.json
+main_web_eval.py
+paywalled_articles.html
+.github

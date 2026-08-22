@@ -1,0 +1,327 @@
+/* ========== Color Scheme Variables ========== */
+:root {
+  /* Day mode (default) - current colors preserved */
+  --bg-body: #1e1e1e;
+  --bg-navbar: #382020;
+  --bg-navbar-hover: #752020;
+  --bg-separator: #481414;
+  --bg-details: #2a2a2a;
+  --bg-button: #4a2d2d;
+  
+  --text-primary: #dcdcdc;
+  --text-secondary: #cccccc;
+  --text-muted: #aaaaaa;
+  --text-navbar: #e0b847;
+  --text-navbar-hover: black;
+  --text-summary: #ffffff;
+  
+  --link-color: #3399ff;
+  --link-hover: #3399ff;
+  
+  --border-color: #555555;
+  --shadow-color: rgba(0, 0, 0, 0.3);
+  
+  /* Accent colors */
+  --accent-blue: #3399ff;
+  --accent-red: #950000;
+  --accent-green: #117930;
+  --accent-yellow: #727d28;
+  --accent-highlight: #046ed8;
+  
+  /* Button colors */
+  --btn-bg: #4a2d2d;
+  --btn-text: #d5a8a8;
+  --btn-border: #7a4a4a;
+  --btn-hover-bg: #5a3a3a;
+}
+
+/* Night mode with blue light filter */
+[data-theme="dark"] {
+  --bg-body: #1a1612;
+  --bg-navbar: #2d1f1a;
+  --bg-navbar-hover: #4a3028;
+  --bg-separator: #3d2418;
+  --bg-details: #252018;
+  --bg-button: #3d2d20;
+  
+  --text-primary: #e8afad;
+  --text-secondary: #d49595;
+  --text-muted: #b09080;
+  --text-navbar: #f5c870;
+  --text-navbar-hover: #1a1612;
+  --text-summary: #f0e0d0;
+  
+  /* Warmer, reduced blue light */
+  --link-color: #ff6666;
+  --link-hover: #ffb380;
+  
+  --border-color: #4a4038;
+  --shadow-color: rgba(0, 0, 0, 0.4);
+  
+  /* Warmer accents for night */
+  --accent-blue: #d4905a;
+  --accent-red: #a85555;
+  --accent-green: #7a9858;
+  --accent-yellow: #9a9058;
+  --accent-highlight: #b87848;
+  
+  /* Warmer button colors */
+  --btn-bg: #3d2d20;
+  --btn-text: #d4bca8;
+  --btn-border: #5a4538;
+  --btn-hover-bg: #4a3628;
+}
+
+/* ========== Base Styles ========== */
+body {
+  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--bg-body);
+  color: var(--text-primary);
+  margin: 0;
+  padding: 0px;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 15px 0;
+}
+
+/* ========== Layout Components ========== */
+.navbar {
+  overflow: hidden;
+  background-color: var(--bg-navbar);
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  z-index: 999;
+  display: flex;
+  justify-content: space-evenly;
+  align-items: center;
+}
+
+.navbar a {
+  display: block;
+  color: var(--text-navbar);
+  text-align: center;
+  font-size: 0.9em;
+  padding: 12px 10px;
+  text-decoration: none;
+  flex: 1;
+}
+
+.navbar a:hover {
+  background: var(--bg-navbar-hover);
+  color: var(--text-navbar-hover);
+}
+
+.main {
+  margin-top: 30px;
+  width: 100%;
+  padding: 15px;
+  box-sizing: border-box; 
+}
+
+.header {
+  border-radius: 6px;
+  padding: 5px 10px;
+  box-shadow: 0 0 10px var(--shadow-color);
+  margin-bottom: 14px;
+  margin-top: 14px;
+  text-align: left;
+}
+
+.separator {
+  font-size: 22px;
+  font-weight: bold;
+  background-color: var(--bg-separator);
+  border-radius: 6px;
+  padding: 15px 20px;
+  box-shadow: 0 0 10px var(--shadow-color);
+  margin-bottom: 14px;
+}
+
+/* ========== Details/Summary ========== */
+details {
+  background-color: var(--bg-details);
+  border-radius: 6px;
+  padding: 15px 20px;
+  box-shadow: 0 0 10px var(--shadow-color);
+  margin-bottom: 14px;
+}
+
+summary {
+  font-size: 22px;
+  color: var(--text-summary);
+  font-weight: bold;
+  cursor: pointer;
+  outline: none;
+}
+
+summary::-webkit-details-marker {
+  color: var(--accent-blue);
+}
+
+.entry-length {
+  font-size: 0.7em;
+  text-decoration: none;
+  font-weight: normal;
+  opacity: 0.6;
+}
+
+/* ========== News Items ========== */
+.news-item {
+  margin-bottom: 25px;
+}
+
+.news-item-dub {
+  margin-bottom: 5px;
+  text-align: right;
+}
+
+/* News Titles */
+.news-title {
+  color: var(--link-color);
+  font-weight: bold;
+  text-decoration: none;
+  font-size: 1.2em;
+}
+
+.news-title:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+.news-title-dub {
+  color: var(--link-color);
+  font-weight: bold;
+  text-decoration: none;
+  font-size: 0.9em;
+}
+
+.news-title-dub:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+/* News Content */
+.news-description {
+  margin-top: 5px;
+  line-height: 1.5;
+  font-size: 1.1em;
+  color: var(--text-secondary);
+}
+
+.news-time {
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.news-topic {
+  color: var(--accent-blue);
+  font-size: 0.7em;
+}
+
+/* ========== Visited States ========== */
+.news-item.visited .news-title,
+.news-item.visited .news-description {
+  opacity: 0.3;
+}
+
+.news-item.visited .label,
+.news-item.visited .button {
+  opacity: 0.2;
+}
+
+.news-item-dub.visited .news-title-dub {
+  opacity: 0.3;
+}
+
+.news-item-dub.visited .label-dub {
+  opacity: 0.2;
+}
+
+/* ========== Uninteresting Entries (previously dismissed) ========== */
+/* Applied when user reveals them via the 🚫 navbar toggle */
+.news-item.uninteresting:not(.visited) .news-title {
+  opacity: 0.3;
+  text-decoration: line-through;
+}
+
+.news-item.uninteresting:not(.visited) .news-description,
+.news-item.uninteresting:not(.visited) .label {
+  opacity: 0.3;
+}
+
+/* ========== Labels and Badges ========== */
+.label {
+  color: white;
+  padding: 2px;
+  border-radius: 4px;
+  font-size: 0.8em;
+  font-family: Arial;
+}
+
+.label-dub {
+  color: white;
+  padding: 2px;
+  border-radius: 4px;
+  font-size: 0.7em;
+  font-family: Arial;
+}
+
+/* Label Colors */
+.source { background-color: var(--accent-red); }
+.topic { background-color: var(--accent-green); } 
+.hours { background-color: var(--accent-yellow); }
+.highlight { background-color: var(--accent-highlight); }
+.ml-badge { margin-left: 4px; }
+
+/* ========== Buttons ========== */
+.button {
+  background-color: transparent;
+  border: none;
+  padding: 2px;
+  text-align: center;
+  font-size: 0.8em;
+  text-decoration: none;
+  border-radius: 4px;
+  margin: 0px 5px;
+  cursor: pointer;
+}
+
+.mark-as-read-btn {
+  background-color: var(--btn-bg);
+  color: var(--btn-text);
+  border: 1px solid var(--btn-border);
+  padding: 10px 20px;
+  font-size: 0.9em;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.2s, transform 0.1s;
+}
+
+.mark-as-read-btn:hover:not(:disabled) {
+  background-color: var(--btn-hover-bg);
+  transform: translateY(-1px);
+}
+
+.mark-as-read-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.mark-as-read-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Version display */
+.version-info {
+  font-size: 0.7em;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 10px 0 10px 0;
+  opacity: 0.5 !important;
+}
+

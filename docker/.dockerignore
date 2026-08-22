@@ -1,0 +1,61 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docker
+docker/
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Documentation (will be mounted separately)
+doc/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Data files (will be mounted as volumes)
+clicktrack/
+aux_data/secrets.json
+
+# Rendered data (generated at runtime)
+render_data_*.json
+
+# Development scripts
+main_web_eval.py
+todo_*.md
+README.md
+
+# Temporary files
+*.tmp
+*.bak
+
+secrets.json

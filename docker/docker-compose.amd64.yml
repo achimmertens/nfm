@@ -1,0 +1,61 @@
+services:
+    nginx:
+        image: nginx:1.25-alpine
+        container_name: nfm-nginx
+        restart: unless-stopped
+        volumes:
+            - C:/_docker/nginx/conf/nginx.conf:/etc/nginx/nginx.conf:ro
+            - C:/_docker/nginx/log:/var/log/nginx
+        depends_on:
+            - nfm-app
+        networks:
+            - nfm-network
+        ports:
+            - "8080:80"
+            - "443:443"
+
+    nfm-app:
+        image: apollon67/newsreader:latest
+        container_name: nfm-app
+        platform: linux/amd64
+        build:
+          context: ..
+          dockerfile: docker/Dockerfile.amd64
+          platforms:
+            - linux/amd64
+        volumes:
+          # Do NOT mount conf directory - it breaks Python package structure
+          # Mount config.py
+          - type: bind
+            source: C:/_docker/nfm/conf/config.py
+            target: /app/app/conf/config.py
+          # Mount logging_config.py
+          - type: bind
+            source: C:/_docker/nfm/conf/logging_config.py
+            target: /app/app/conf/logging_config.py
+          # Mount clicktrack directory
+          - type: bind
+            source: C:/_docker/nfm/clicktrack
+            target: /app/clicktrack
+          # Mount secrets directory
+          - type: bind
+            source: C:/_docker/nfm/secrets
+            target: /app/secrets
+        environment:
+          - PYTHONUNBUFFERED=1
+          - PORT=8000
+        expose:
+          - "8000"
+        restart: unless-stopped
+        healthcheck:
+          test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+          interval: 300s
+          timeout: 5s
+          retries: 5
+          start_period: 120s
+        networks:
+          - nfm-network
+
+networks:
+    nfm-network:
+      driver: bridge

@@ -1,0 +1,86 @@
+# Multi-stage Dockerfile for News Feed Manager (amd64)
+# Stage 1: Build stage with model preloading
+FROM python:3.11-slim AS builder
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only requirements first for better layer caching
+COPY pyproject.toml ./
+
+# Install CPU-only PyTorch first (much smaller than CUDA version)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    torch==2.2.2 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining dependencies (without torch, since it's already installed)
+RUN pip install --no-cache-dir \
+    fastapi[standard-no-fastapi-cloud-cli]==0.121.3 \
+    jinja2==3.1.6 \
+    numpy==1.26.4 \
+    scikit-learn==1.4.2 \
+    sentence-transformers==2.7.0 \
+    aiohttp==3.8.4 \
+    feedparser==6.0.12 \
+    pytz==2024.1 \
+    requests==2.32.3 \
+    apscheduler>=3.11.1
+
+# Preload the embedding model to cache it in the Docker image
+RUN python -c "from sentence_transformers import SentenceTransformer; \
+    print('Downloading embedding model...'); \
+    model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2'); \
+    print('Model successfully cached')"
+
+# Verify CPU-only torch (no CUDA)
+RUN python -c "import torch; print(f'PyTorch version: {torch.__version__}'); \
+    print(f'CUDA available: {torch.cuda.is_available()}'); \
+    assert not torch.cuda.is_available(), 'ERROR: CUDA should not be available!'; \
+    print('✓ Verified: CPU-only PyTorch')"
+
+# Stage 2: Runtime stage
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Python packages and model cache from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
+
+# Copy application code
+COPY app/ ./app/
+COPY main.py ./
+COPY pyproject.toml ./
+
+# Create necessary directories for volume mounts
+RUN mkdir -p /app/aux_data /app/clicktrack /app/secrets /app/misc
+
+# Copy auxiliary data files (german_stopwords.json)
+COPY aux_data/german_stopwords.json /app/aux_data/
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+
+# Expose application port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/docs || exit 1
+
+# Run the application
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

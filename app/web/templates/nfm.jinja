@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <title>Aktuelle Nachrichten</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  
+  {% if embedded_nfm_css %}
+    <style>{{ embedded_nfm_css }}</style>
+  {% else %}
+    <link rel="stylesheet" href="/static/nfm.css">
+  {% endif %}
+
+  {% if embedded_favicon_ico %}
+    <link rel="shortcut icon" href="{{ embedded_favicon_ico }}">
+    <link rel="icon" type="image/png" sizes="96x96" href="{{ embedded_favicon_96x96_png }}">
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ embedded_apple_touch_icon_png }}">
+    {% if deploy_manifest %}
+      <link rel="manifest" href="data:application/json;charset=utf-8,{{ embedded_site_webmanifest | urlencode }}">
+    {% endif %}
+  {% else %}
+    <link rel="shortcut icon" href="/static/favicon.ico">
+    <link rel="icon" type="image/png" sizes="96x96" href="/static/favicon-96x96.png">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+    {% if deploy_manifest %}
+      <link rel="manifest" href="/static/manifest.json">
+    {% endif %}
+  {% endif %}
+
+  {% if embedded_nfm_js %}
+    <script>{{ embedded_nfm_js }}</script>
+  {% else %}
+    <script src="/static/nfm.js"></script>
+  {% endif %}
+
+</head>
+
+<!------------------------------------------------------------------------------------------------------------------->
+
+<body>
+
+  <!-- ========== Navigation ========== -->
+  <div class="navbar">
+    <a href="#" onclick="event.preventDefault(); filterNewsItems(6);">6h</a>
+    <a href="#" onclick="event.preventDefault(); filterNewsItems(12);">12h</a>
+    <a href="#" onclick="event.preventDefault(); filterNewsItems(24);">24h</a>
+    <a href="#" onclick="event.preventDefault(); filterNewsItems('*');">⭐</a>
+    <a href="#" onclick="event.preventDefault(); filterNewsItems('💡');" title="Nur ähnliche Einträge anzeigen">💡</a>
+    <a href="#" onclick="event.preventDefault(); cycleSectionVisibility();" title="Darstellung umschalten">💫</a>
+    <a href="#" onclick="event.preventDefault(); toggleTheme();" title="Tag/Nachtsicht umschalten">🌙</a>
+    <a id="toggle-uninteresting-btn" href="#" onclick="event.preventDefault(); toggleUninterestingVisibility();" title="Uninteressante Einträge einblenden">🚫</a>
+    {% if enable_hide_unread %}
+      <a href="#" onclick="event.preventDefault(); resetVisitedLinks();" title="Ungelesene zurücksetzen">🧹</a>
+    {% endif %}
+  </div>
+
+  <div class="main">
+
+    <!-- ========== Header ========== -->
+    <div class="header">
+      <table>
+        <tr>
+          <td style="width:20%">
+            {% if embedded_favicon_ico %}
+              <img src="{{ embedded_favicon_ico }}" width="80">
+            {% else %}
+              <img src="/static/favicon.png" width="80">
+            {% endif %}
+          </td>
+          <td>
+            <p>
+              {{data["date"]}}
+              <span id="dynamic-stats">
+                <br>{{data["new_entries"]}} neue Einträge in {{data["hours_back"]}}h
+                {% if data["n_highlighted"] %}
+                  <br>{{data["n_highlighted"]}} Einträge mit ⭐
+                {% endif %}
+                {% if data["n_ml_tagged"] %}
+                  <br>{{data["n_ml_tagged"]}} Einträge mit 💡
+                {% endif %}
+              </span>
+              {% if data["n_filtered"] %}
+                <br>{{data["n_filtered"]}} Einträge gefiltert
+              {% endif %}
+              <span id="uninteresting-stats"></span>
+            </p>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- ========== Macros for News Entries ========== -->
+    {% macro render_duplicate(dup) %}
+      <div class="news-item-dub">
+        <span class="label-dub source">{{dup.source}}</span>
+        <a href="{{dup.link}}" onclick="clickFollow(event, this)" class="news-title-dub">{{dup.title}}</a>
+      </div>
+    {% endmacro %}
+
+    {% macro render_news_item(entry, data) %}
+      {% if not entry.is_duplicate %}
+        <div class="news-item{% if entry.lid in uninteresting_lids %} uninteresting{% endif %}{% if entry.is_ml_tagged %} ml-tagged{% endif %}">
+          <a href="{{entry.link}}" onclick="trackClickFollow(event, this, '{{entry.lid}}', 1)" class="news-title">{% if entry.is_ml_tagged %}💡 {% endif %}{{entry.title}}</a>
+          <br>
+          <span class="label source">{{entry.source}}</span>
+          <span class="label topic">{{entry.topic}}</span>
+          <span class="label hours">{{entry.hours_ago}}h</span>
+          {% if entry.is_ml_tagged %}<span class="label highlight ml-badge">{{entry.ml_score_pct}}%</span>{% endif %}
+          <p class="news-description">{{entry.description}}</p>
+          {% for lid in entry.duplicates %}
+            {{ render_duplicate(data["by_lid"][lid]) }}
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endmacro %}
+
+    {% macro render_topic_news_item(entry, data) %}
+      {% if not entry.is_duplicate %}
+        <div class="news-item{% if entry.lid in uninteresting_lids %} uninteresting{% endif %}{% if entry.is_ml_tagged %} ml-tagged{% endif %}">
+          <a href="{{entry.link}}" onclick="trackClickFollow(event, this, '{{entry.lid}}', 1)" class="news-title">{% if entry.is_ml_tagged %}💡 {% endif %}{{entry.title}}</a>
+          <br>
+          <span class="label topic">{{entry.topic}}</span>
+          <span class="label hours">{{entry.hours_ago}}h</span>
+          <span class="label source">{{entry.source}}</span>
+          {% if entry.is_ml_tagged %}<span class="label highlight ml-badge">{{entry.ml_score_pct}}%</span>{% endif %}
+          <p class="news-description">{{entry.description}}</p>
+          {% for lid in entry.duplicates %}
+            {{ render_duplicate(data["by_lid"][lid]) }}
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endmacro %}
+
+    <!-- ========== Sources Section ========== -->
+    <div class="separator">Quellen</div>
+
+    <div id="sources-section">
+    {% for feed_source, entries in data["by_source"].items() %}
+    {% set non_duplicate_entries = entries|rejectattr('is_duplicate')|list %}
+    {% if non_duplicate_entries|length > 0 %}
+    <details data-storage-key="{{feed_source}}">
+      <summary>{{feed_source}} <span class="entry-length">[{{ non_duplicate_entries|length }}]</span></summary>
+      <hr>
+      {% for entry in entries %}
+        {{ render_news_item(entry, data) }}
+      {% endfor %}
+      {% if enable_hide_unread %}
+      <div style="text-align: center; margin: 20px 0;">
+        <button class="button mark-as-read-btn" type="button" 
+                onclick="hideUninterestingItems(event, '{{feed_source}}', 'source', this)">
+          🗑️ Ungelesene ausblenden
+        </button>
+      </div>
+      {% endif %}
+    </details>
+    {% endif %}
+    {% endfor %}
+    </div>
+
+    <!-- ========== Topics Section ========== -->
+    <div class="separator">Themen</div>
+
+    <div id="topics-section">
+    {% for feed_topic, entries in data["by_topic"].items() %}
+    {% set non_duplicate_entries = entries|rejectattr('is_duplicate')|list %}
+    {% if non_duplicate_entries|length > 0 %}
+    <details data-storage-key="{{feed_topic}}">
+      <summary>{{feed_topic}} <span class="entry-length">[{{ non_duplicate_entries|length }}]</span></summary>
+      <hr>
+      {% for entry in entries %}
+        {{ render_topic_news_item(entry, data) }}
+      {% endfor %}
+      {% if enable_hide_unread %}
+      <div style="text-align: center; margin: 20px 0;">
+        <button class="button mark-as-read-btn" type="button" 
+                onclick="hideUninterestingItems(event, '{{feed_topic}}', 'topic', this)">
+          🗑️ Ungelesene ausblenden
+        </button>
+      </div>
+      {% endif %}
+    </details>
+    {% endif %}
+    {% endfor %}
+    </div>
+
+    <div class="version-info">v{{ app_version }}</div>
+
+  </div>
+
+</body>
+</html>
