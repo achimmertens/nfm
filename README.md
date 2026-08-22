@@ -2,7 +2,7 @@
 
 A self-hosted, personalized RSS news aggregator with semantic deduplication, ML-based interest tagging, and scheduled email delivery. Built with FastAPI, designed to run comfortably on low-resource hardware (Raspberry Pi compatible).
 
-![NFM screenshot](doc/images/screenshot.png)
+<p align="center"><img src="doc/images/screenshot.png" width="600" alt="Screenshot"></p>
 
 ## Features
 
