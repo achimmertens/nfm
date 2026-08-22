@@ -1,6 +1,8 @@
 # NFM — News Feed Manager
 
-A self-hosted, personalized RSS news aggregator with semantic deduplication, ML-based interest tagging, and scheduled email delivery. Built with FastAPI, designed to run comfortably on low-resource hardware (Raspberry Pi compatible).
+NFM is a self-hosted, personalized RSS news reader built around semantic deduplication, user-specific filtering, and click-driven ML tagging. The app aggregates feeds from multiple sources, filters and ranks articles for a user, and can serve a web UI or scheduled email digest without requiring a database.
+
+Built with FastAPI, designed to run comfortably on low-resource hardware (Raspberry Pi compatible).
 
 <p align="center"><img src="doc/images/screenshot.png" width="600" alt="Screenshot"></p>
 
@@ -13,6 +15,17 @@ A self-hosted, personalized RSS news aggregator with semantic deduplication, ML-
 - **Paywall detection** — flags articles likely to be behind a paywall based on heuristic content scoring
 - **Web UI + Email digest** — browse via a responsive web page, well suited for mobile clients or receive a scheduled HTML email digest
 - **No database** — all state lives in JSON/JSONL files on disk
+
+## Stack
+
+- FastAPI
+- Jinja2
+- APScheduler
+- feedparser
+- scikit-learn
+- sentence-transformers
+- PyTorch (CPU build)
+- uv for environment management
 
 ## Architecture
 
@@ -44,29 +57,21 @@ RSS feeds → async fetch → semantic dedup → personalized filtering → rend
 
 ```bash
 git clone <this-repo>
-cd project
+cd nfm
 uv sync
 ```
 
 ### Configuration
 
 1. Copy the secrets template and fill in your SMTP credentials (only needed for email delivery):
-   ```bash
-   cp secrets/secrets.json.sample secrets/secrets.json
-   ```
 2. Edit `app/conf/config.py` to define your own user(s), feed lists, blacklist/highlight keywords, and scheduling. See `config_user01` for a complete example.
 
 ### Running Locally
 
 ```bash
-# Dev mode: serves precomputed render data, no live RSS fetching (fast UI iteration)
-uv run --active fastapi dev main_web_eval.py --reload
-
-# Full pipeline: live RSS fetching, scheduler, ML tagging, email delivery
-uv run --active fastapi dev main.py --reload
+# Full pipeline: live RSS fetching, scheduler, ML tagging
+uv run --active main.py --reload
 ```
-
-Set `USE_PRECOMPUTED_RENDER_DATA = True` in `app/conf/config.py` to reuse cached render data during development.
 
 Once running, open `http://localhost:8000/<uid>` (e.g. `http://localhost:8000/user01`).
 
@@ -99,7 +104,7 @@ See [doc/DOCKER_DEPLOYMENT.md](doc/DOCKER_DEPLOYMENT.md) and [doc/DOCKER_QUICK_R
 
 ## Project Structure
 
-```
+``` txt
 main.py                    # Production FastAPI app with scheduler
 main_web_eval.py            # Dev server using precomputed render data
 app/
@@ -121,4 +126,4 @@ tests/                     # Test suite
 
 ## License
 
-No license has been specified yet. All rights reserved unless a license is added.
+This project is distributed under the MIT License. See [LICENSE.txt](LICENSE.txt).
