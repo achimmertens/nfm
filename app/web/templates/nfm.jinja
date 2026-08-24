@@ -12,7 +12,7 @@
   {% if embedded_nfm_css %}
     <style>{{ embedded_nfm_css }}</style>
   {% else %}
-    <link rel="stylesheet" href="/static/nfm.css">
+    <link rel="stylesheet" href="/static/nfm.css?v={{ app_version }}">
   {% endif %}
 
   {% if embedded_favicon_ico %}
@@ -35,7 +35,7 @@
   {% if embedded_nfm_js %}
     <script>{{ embedded_nfm_js }}</script>
   {% else %}
-    <script src="/static/nfm.js"></script>
+    <script src="/static/nfm.js?v={{ app_version }}"></script>
   {% endif %}
 
 </head>
