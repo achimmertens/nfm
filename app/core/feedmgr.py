@@ -29,6 +29,7 @@ class NewsFeedUser:
             user_feeds: List[Dict[str, any]],
             hours_back: int = 24,
             limit: int = 999,
+            settings_store=None,
     ):
         self._uid = uid
         self.consumption_modes = set(consumption_modes)  # Consumption modes: e.g. {"web", "email"}
@@ -39,18 +40,72 @@ class NewsFeedUser:
         self._highlight_keywords = highlight_keywords
         self._hours_back = hours_back
         self.render_data = {}
+        # Optional runtime settings store. When set, filter/feed values are
+        # read live from the store on every render cycle, so GUI changes take
+        # effect on the next update (or forced refresh) without a restart.
+        self._settings_store = settings_store
 
         # Load user feeds with optional source filtering and limit
-        self._user_feeds_by_url = {}
-        feed_count = 0
-        for user_feed in user_feeds:
-            if config.SOURCE_FILTER and user_feed["source"] not in config.SOURCE_FILTER:
-                continue
-            if feed_count >= limit:
-                break
-            self._user_feeds_by_url[user_feed["url"]] = user_feed
-            feed_count += 1
+        self._user_feeds_by_url = self._apply_feed_selection(user_feeds, limit)
 
+    # ------------------------------------------------------------------
+    # Runtime (settings-store aware) accessors
+    # ------------------------------------------------------------------
+    def _store(self):
+        """Return the runtime settings store, or None if not configured."""
+        return getattr(self, "_settings_store", None)
+
+    def _apply_feed_selection(self, feeds, limit=None) -> Dict[str, dict]:
+        """Build the {url: feed} pool, honoring SOURCE_FILTER and feed LIMIT."""
+        if limit is None:
+            limit = int(getattr(config, "LIMIT", 999))
+        source_filter = getattr(config, "SOURCE_FILTER", []) or []
+        by_url = {}
+        count = 0
+        for user_feed in feeds:
+            if source_filter and user_feed["source"] not in source_filter:
+                continue
+            if count >= limit:
+                break
+            by_url[user_feed["url"]] = user_feed
+            count += 1
+        return by_url
+
+    def _current_feeds_by_url(self) -> Dict[str, dict]:
+        """Feeds currently effective for this user (live from settings store)."""
+        store = self._store()
+        if store is not None:
+            feeds = self._settings_store.get_user_feeds(self._uid)
+            if feeds is not None:
+                return self._apply_feed_selection(feeds)
+        return dict(self._user_feeds_by_url)
+
+    def _current_setting(self, name, fallback):
+        """Read a per-user setting live from the settings store."""
+        store = self._store()
+        if store is not None:
+            settings = self._settings_store.get_user_settings(self._uid)
+            if settings is not None and name in settings:
+                return settings[name]
+        return fallback
+
+    def _current_blacklist_link(self):
+        return self._current_setting("blacklist_link", self._blacklist_link)
+
+    def _current_blacklist_title(self):
+        return self._current_setting("blacklist_title", self._blacklist_title)
+
+    def _current_highlight_keywords(self):
+        return self._current_setting("highlight_keywords", self._highlight_keywords)
+
+    def _current_source_sort_order(self):
+        return self._current_setting("source_sort_order", self._source_sort_order)
+
+    def _current_recipients(self):
+        return self._current_setting("recipients", self._recipients)
+
+    def _current_hours_back(self):
+        return int(getattr(config, "HOURS_BACK", self._hours_back))
 
     def get_lid_info(self, lid: str) -> dict:
         """Get link information by link ID."""
@@ -155,7 +210,7 @@ class NewsFeedUser:
     def source_sort_func(self, lid: str) -> int:
         """Sortierfunktion für Quellen basierend auf der Konfiguration."""
         source = self._stories_by_lid[lid]['source']
-        sort_order = self._source_sort_order
+        sort_order = self._current_source_sort_order()
         return sort_order.get(source, 9999)  # Standardwert für unbekannte Quellen
 
     def save_render_data_as_json(self, file_fq: Path) -> None:
@@ -182,14 +237,16 @@ class NewsFeedUser:
         n_total_filtered_by_blacklist = 0
         n_total_filtered_by_paywall = 0
 
-        user_feed_pool = self._user_feeds_by_url.keys()
+        # Read the current (possibly runtime-edited) feed pool for this cycle
+        feeds_by_url = self._current_feeds_by_url()
+        user_feed_pool = feeds_by_url.keys()
 
         # Fetch and process feeds asynchronously
         output = process_feeds(user_feed_pool, uid=self._uid )
         successful_feeds_by_url = output['successful_by_url']
 
         # Process each feed's entries
-        for feed in self._user_feeds_by_url.values():
+        for feed in feeds_by_url.values():
             if feed['url'] not in successful_feeds_by_url:
                 continue
             feed_raw_content = successful_feeds_by_url[feed['url']].raw_content
@@ -204,11 +261,11 @@ class NewsFeedUser:
                 continue
 
             # Apply filters
-            filtered_entries = tools.timediff_filter(self._hours_back, rss.entries)
-            filtered_entries = tools.blacklist_filter(filtered_entries, self._blacklist_link, self._blacklist_title)
+            filtered_entries = tools.timediff_filter(self._current_hours_back(), rss.entries)
+            filtered_entries = tools.blacklist_filter(filtered_entries, self._current_blacklist_link(), self._current_blacklist_title())
             filtered_entries = tools.paywall_filter(filtered_entries, feed)
             filtered_entries = tools.description_filter(filtered_entries, feed)
-            filtered_entries = tools.highlight_filter(filtered_entries, self._highlight_keywords)
+            filtered_entries = tools.highlight_filter(filtered_entries, self._current_highlight_keywords())
 
             # Accumulate filter statistics
             n_total_filtered_by_timediff += filtered_entries.get('n_filtered_by_timediff', 0)
@@ -316,7 +373,7 @@ class NewsFeedUser:
             "n_ml_tagged": n_total_ml_tagged,
             "n_filtered": n_total_filtered_by_blacklist,
             "date": datetime.now(pytz.timezone('Europe/Berlin')).strftime("%d.%m.%Y %H:%M"),
-            "hours_back": self._hours_back,
+            "hours_back": self._current_hours_back(),
             "uid": self._uid,
         }
 
@@ -342,7 +399,7 @@ class NewsFeedUser:
                     <p>Die neuesten Schlagzeilen befinden sich in der beigefügten HTML-Datei:</p>
                     </body>
                     """,
-            recipients=self._recipients,
+            recipients=self._current_recipients(),
             attachment_html=render_app(self.render_data),
             attachment_fname="feeds.html"
         )
@@ -353,9 +410,11 @@ class NewsFeedManager:
             self,
             user_cfgs: List[Dict[str, any]],
             hours_back: int = 24,
-            limit: int = 999
+            limit: int = 999,
+            settings_store=None,
     ):
-        
+
+        self._settings_store = settings_store
         self.news_feed_users_by_uid = {}       
 
         for user_cfg in user_cfgs:
@@ -372,8 +431,8 @@ class NewsFeedManager:
                 user_feeds=user_cfg["feeds"],
                 hours_back=hours_back,
                 limit=limit,
+                settings_store=self._settings_store,
             )
 
     def get_news_feed_user(self, uid: str) -> NewsFeedUser:
         return self.news_feed_users_by_uid.get(uid)
-

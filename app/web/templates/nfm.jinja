@@ -57,6 +57,9 @@
     {% if enable_hide_unread %}
       <a href="#" onclick="event.preventDefault(); resetVisitedLinks();" title="Ungelesene zurücksetzen">🧹</a>
     {% endif %}
+    {% if show_settings_ui %}
+      <a href="#" onclick="event.preventDefault(); openSettings();" title="Einstellungen">⚙️</a>
+    {% endif %}
   </div>
 
   <div class="main">
@@ -191,6 +194,26 @@
     <div class="version-info">v{{ app_version }}</div>
 
   </div>
+
+  {% if show_settings_ui %}
+  <!-- ========== Settings Overlay ========== -->
+  <div id="settings-overlay" class="settings-overlay" hidden>
+    <div class="settings-panel">
+      <div class="settings-header">
+        <span>Einstellungen{% if data %} — {{ data["uid"] }}{% endif %}</span>
+        <button type="button" class="settings-close" onclick="closeSettings();" title="Schließen">×</button>
+      </div>
+      <div id="settings-status"></div>
+      <div id="settings-content">
+        <p>Lade Einstellungen…</p>
+      </div>
+      <div class="settings-footer">
+        <button type="button" class="btn" onclick="closeSettings();">Abbrechen</button>
+        <button type="button" class="btn" id="settings-save-btn" onclick="saveSettings();">Speichern</button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
 </body>
 </html>

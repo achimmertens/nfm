@@ -722,3 +722,352 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initialize uninteresting entries visibility
   initUninterestingVisibility();
 });
+
+
+// ========== Settings UI (per-user / global runtime settings) ==========
+// Backed by the SettingsStore: GET /{uid}/settings returns the merged
+// (config.py defaults + runtime-settings.json overlay) state, PUT /{uid}/settings
+// validates + persists it, and POST /{uid}/refresh triggers an immediate re-render.
+
+let settingsState = null; // { settings, feeds, global, source_sort_order } from GET
+
+function settingsBasePath() {
+  return window.location.pathname.replace(/\/+$/, '');
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function setSettingsStatus(msg, kind) {
+  const el = document.getElementById('settings-status');
+  if (!el) return;
+  el.className = kind === 'err' ? 'settings-status err'
+    : (kind === 'ok' ? 'settings-status ok' : '');
+  el.textContent = msg || '';
+}
+
+function settingsContent() {
+  return document.getElementById('settings-content');
+}
+
+// --------------------------------------------------------- tag editors
+function tagEditorHtml(field, values, placeholder) {
+  const chips = (values || []).map((v, i) =>
+    `<span class="tag-chip">${escapeHtml(v)}` +
+    `<button type="button" class="tag-x" onclick="removeTag('${field}', ${i})" title="Entfernen">×</button></span>`
+  ).join('');
+  return `<div class="tag-list" id="${field}-list">${chips || '<span class="settings-hint">(leer)</span>'}</div>
+    <div class="tag-add-row">
+      <input type="text" id="${field}-add" placeholder="${placeholder}"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();addTag('${field}');}">
+      <button type="button" class="btn" onclick="addTag('${field}')">Hinzufügen</button>
+    </div>`;
+}
+
+// Commit text/checkbox input edits (feeds, sort order, consumption modes,
+// global block) back into settingsState. Called before any re-render or save.
+function commitDomEdits() {
+  if (!settingsState) return;
+
+  // Feeds table
+  const tbody = document.getElementById('feed-table-body');
+  if (tbody) {
+    const feeds = [];
+    tbody.querySelectorAll('tr').forEach(tr => {
+      const inputs = tr.querySelectorAll('input');
+      if (inputs.length < 3) return;
+      const source = (inputs[0].value || '').trim();
+      const url = (inputs[1].value || '').trim();
+      const topic = (inputs[2].value || '').trim();
+      if (!source && !url && !topic) return; // skip fully-empty row
+      const feed = { source, url, topic };
+      if (inputs[3].checked) feed.check_paywall = true;
+      const desc = (inputs[4].value || '').trim();
+      if (desc) feed.desc_filter = desc;
+      feeds.push(feed);
+    });
+    settingsState.feeds = feeds;
+  }
+
+  // Source sort order
+  const sortList = document.getElementById('sort-order-list');
+  if (sortList) {
+    const map = {};
+    sortList.querySelectorAll('.sort-row').forEach(row => {
+      const name = row.getAttribute('data-sort-name') || '';
+      const numEl = row.querySelector('input[type="number"]');
+      const v = numEl ? parseInt(numEl.value, 10) : NaN;
+      if (name && !isNaN(v)) map[name] = v;
+    });
+    if (settingsState.settings) settingsState.settings.source_sort_order = map;
+  }
+
+  // Consumption modes
+  const modes = [];
+  const cmWeb = document.getElementById('cm-web');
+  const cmEmail = document.getElementById('cm-email');
+  if (cmWeb && cmWeb.checked) modes.push('web');
+  if (cmEmail && cmEmail.checked) modes.push('email');
+  if (settingsState.settings) settingsState.settings.consumption_modes = modes;
+
+  // Global block (curated fields)
+  const globals = settingsState.global || {};
+  const readInt = (id) => { const el = document.getElementById(id); if (!el || el.value === '') return null; const v = Number(el.value); return isNaN(v) ? null : v; };
+  const readNum = (id) => readInt(id);
+  const readBool = (id) => { const el = document.getElementById(id); return el ? el.checked : null; };
+  const readCsv = (id) => { const el = document.getElementById(id); if (!el) return null; return el.value.split(',').map(s => s.trim()).filter(Boolean); };
+  const setIf = (key, v) => { if (v !== null && v !== undefined) globals[key] = v; };
+  setIf('LIMIT', readInt('g_LIMIT'));
+  setIf('HOURS_BACK', readInt('g_HOURS_BACK'));
+  setIf('SOURCE_FILTER', readCsv('g_SOURCE_FILTER'));
+  setIf('ENABLE_HIDE_UNREAD', readBool('g_ENABLE_HIDE_UNREAD'));
+  setIf('DEPLOY_MANIFEST', readBool('g_DEPLOY_MANIFEST'));
+  setIf('PAYWALL_SCORE_THRESHOLD', readInt('g_PAYWALL_SCORE_THRESHOLD'));
+  setIf('PAYWALL_REQUEST_TIMEOUT_SECONDS', readInt('g_PAYWALL_REQUEST_TIMEOUT_SECONDS'));
+  setIf('PAYWALL_REQUEST_RETRIES', readInt('g_PAYWALL_REQUEST_RETRIES'));
+  setIf('ML_TAG_ENABLED', readBool('g_ML_TAG_ENABLED'));
+  setIf('ML_TAG_THRESHOLD', readNum('g_ML_TAG_THRESHOLD'));
+  setIf('ML_RETRAIN_THRESHOLD_BYTES', readInt('g_ML_RETRAIN_THRESHOLD_BYTES'));
+  setIf('ML_NEGATIVE_WEIGHT', readNum('g_ML_NEGATIVE_WEIGHT'));
+  setIf('ML_NEGATIVE_CAP_MULTIPLIER', readNum('g_ML_NEGATIVE_CAP_MULTIPLIER'));
+  const hourEl = document.getElementById('g_CRONTRIGGER_hour');
+  const minuteEl = document.getElementById('g_CRONTRIGGER_minute');
+  if (hourEl || minuteEl) {
+    const h = (hourEl && hourEl.value || '').trim();
+    const m = (minuteEl && minuteEl.value || '').trim();
+    if (h !== '' || m !== '') globals.CRONTRIGGER = { hour: h, minute: m };
+  }
+  settingsState.global = globals;
+}
+
+function rerenderForm() {
+  const content = settingsContent();
+  if (content) content.innerHTML = buildSettingsForm(settingsState);
+}
+
+// ------------------------------------------------------------- mutations
+function addTag(field) {
+  commitDomEdits();
+  const input = document.getElementById(field + '-add');
+  const val = input ? (input.value || '').trim() : '';
+  if (!val) return;
+  if (!Array.isArray(settingsState.settings[field])) settingsState.settings[field] = [];
+  settingsState.settings[field].push(val);
+  rerenderForm();
+  const ni = document.getElementById(field + '-add');
+  if (ni) ni.focus();
+}
+
+function removeTag(field, idx) {
+  commitDomEdits();
+  if (Array.isArray(settingsState.settings[field])) {
+    settingsState.settings[field].splice(idx, 1);
+  }
+  rerenderForm();
+}
+
+function addFeedRow() {
+  commitDomEdits();
+  if (!Array.isArray(settingsState.feeds)) settingsState.feeds = [];
+  settingsState.feeds.push({ source: '', url: '', topic: '', check_paywall: false, desc_filter: '' });
+  rerenderForm();
+}
+
+function removeFeedRow(idx) {
+  commitDomEdits();
+  if (Array.isArray(settingsState.feeds)) {
+    settingsState.feeds.splice(idx, 1);
+  }
+  rerenderForm();
+}
+
+function addSortRow() {
+  commitDomEdits();
+  if (!settingsState.settings.source_sort_order) settingsState.settings.source_sort_order = {};
+  let base = 'Neue Quelle';
+  const existing = Object.keys(settingsState.settings.source_sort_order);
+  let name = base;
+  let n = 1;
+  while (existing.indexOf(name) >= 0) { name = `${base} ${n++}`; }
+  settingsState.settings.source_sort_order[name] = 0;
+  rerenderForm();
+}
+
+// ------------------------------------------------------------ form build
+function buildSettingsForm(payload) {
+  const s = payload.settings || {};
+  const feeds = payload.feeds || [];
+  const g = payload.global || {};
+  const modes = Array.isArray(s.consumption_modes) ? s.consumption_modes : [];
+  const cmChecked = (m) => modes.indexOf(m) >= 0 ? 'checked' : '';
+
+  const sortMap = s.source_sort_order || {};
+  const sortKeys = Object.keys(sortMap).sort((a, b) => a.localeCompare(b));
+  const sortRowsHtml = sortKeys.length
+    ? sortKeys.map(name =>
+        `<div class="sort-row" data-sort-name="${escapeHtml(name)}">` +
+        `<span>${escapeHtml(name)}</span>` +
+        `<input type="number" min="0" step="1" value="${escapeHtml(sortMap[name])}"></div>`
+      ).join('')
+    : '<span class="settings-hint">(keine Quellenreihenfolge definiert)</span>';
+
+  const feedRows = feeds.length
+    ? feeds.map((f, i) => `
+        <tr>
+          <td><input type="text" value="${escapeHtml(f.source)}"></td>
+          <td><input type="url" value="${escapeHtml(f.url)}"></td>
+          <td><input type="text" value="${escapeHtml(f.topic)}"></td>
+          <td><input type="checkbox" ${f.check_paywall ? 'checked' : ''}></td>
+          <td><input type="text" value="${escapeHtml(f.desc_filter || '')}"></td>
+          <td><button type="button" class="feed-del" onclick="removeFeedRow(${i})">✕</button></td>
+        </tr>`).join('')
+    : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);font-size:12px;">Keine Feeds. Fügen Sie mindestens einen hinzu.</td></tr>';
+
+  const check = (k, label) =>
+    `<label class="check-row"><input type="checkbox" id="g_${k}" ${g[k] ? 'checked' : ''}> ${label}</label>`;
+
+  return `
+    <div class="settings-section">
+      <h4>Empfang</h4>
+      <div class="check-row"><input type="checkbox" id="cm-web" ${cmChecked('web')}> <span>Web-Ansicht</span></div>
+      <div class="check-row"><input type="checkbox" id="cm-email" ${cmChecked('email')}> <span>E-Mail-Digest</span></div>
+    </div>
+
+    <div class="settings-section">
+      <h4>Filter &amp; Hervorhebung</h4>
+      <label>Hervorgehobene Schlüsselwörter (⭐)</label>
+      ${tagEditorHtml('highlight_keywords', s.highlight_keywords, 'Schlüsselwort…')}
+      <label>Blacklist — Link-Pfad (ausblenden)</label>
+      ${tagEditorHtml('blacklist_link', s.blacklist_link, 'Teilstring…')}
+      <label>Blacklist — Titel (ausgeblendete Schlagworte)</label>
+      ${tagEditorHtml('blacklist_title', s.blacklist_title, 'Schlagwort…')}
+      <label>E-Mail-Empfänger</label>
+      ${tagEditorHtml('recipients', s.recipients, 'name@domain…')}
+    </div>
+
+    <div class="settings-section">
+      <h4>Quellenreihenfolge</h4>
+      <div id="sort-order-list">${sortRowsHtml}</div>
+      <button type="button" class="btn" onclick="addSortRow()">＋ Quelle hinzufügen</button>
+    </div>
+
+    <div class="settings-section">
+      <h4>Feeds</h4>
+      <table class="feed-table">
+        <thead><tr><th>Quelle</th><th>URL</th><th>Thema</th><th>Paywall</th><th>desc_filter</th><th></th></tr></thead>
+        <tbody id="feed-table-body">${feedRows}</tbody>
+      </table>
+      <button type="button" class="btn" onclick="addFeedRow()">＋ Feed hinzufügen</button>
+    </div>
+
+    <details class="settings-section">
+      <summary>Globale Einstellungen</summary>
+      <div class="settings-section">
+        <label>LIMIT (max. Feeds pro Lauf)</label>
+        <input id="g_LIMIT" class="wide-number" type="number" min="1" step="1" value="${escapeHtml(g.LIMIT)}">
+        <label>HOURS_BACK (Zeitfenster in Stunden)</label>
+        <input id="g_HOURS_BACK" class="wide-number" type="number" min="1" step="1" value="${escapeHtml(g.HOURS_BACK)}">
+        <label>SOURCE_FILTER (Quellen, Komma-getrennt; leer = alle)</label>
+        <input id="g_SOURCE_FILTER" type="text" value="${escapeHtml(Array.isArray(g.SOURCE_FILTER) ? g.SOURCE_FILTER.join(', ') : '')}">
+        <label>CRONTRIGGER (E-Mail-Zeit, HH:MM)</label>
+        <div style="display:flex;align-items:center;gap:4px;">
+          <input id="g_CRONTRIGGER_hour" class="small-number" type="text" value="${escapeHtml((g.CRONTRIGGER && g.CRONTRIGGER.hour) || '')}">
+          <span>:</span>
+          <input id="g_CRONTRIGGER_minute" class="small-number" type="text" value="${escapeHtml((g.CRONTRIGGER && g.CRONTRIGGER.minute) || '')}">
+        </div>
+        ${check('ENABLE_HIDE_UNREAD', 'Hide-Unread-Buttons anzeigen')}
+        ${check('DEPLOY_MANIFEST', 'PWA-Manifest ausliefern')}
+        ${check('ML_TAG_ENABLED', 'ML-Tagging aktivieren')}
+        <label>ML_TAG_THRESHOLD (0–1)</label>
+        <input id="g_ML_TAG_THRESHOLD" class="wide-number" type="number" min="0" max="1" step="0.01" value="${escapeHtml(g.ML_TAG_THRESHOLD)}">
+        <label>PAYWALL_SCORE_THRESHOLD (0–100)</label>
+        <input id="g_PAYWALL_SCORE_THRESHOLD" class="wide-number" type="number" min="0" max="100" step="1" value="${escapeHtml(g.PAYWALL_SCORE_THRESHOLD)}">
+        <label>PAYWALL_REQUEST_TIMEOUT_SECONDS</label>
+        <input id="g_PAYWALL_REQUEST_TIMEOUT_SECONDS" class="wide-number" type="number" min="1" step="1" value="${escapeHtml(g.PAYWALL_REQUEST_TIMEOUT_SECONDS)}">
+        <label>PAYWALL_REQUEST_RETRIES</label>
+        <input id="g_PAYWALL_REQUEST_RETRIES" class="small-number" type="number" min="0" step="1" value="${escapeHtml(g.PAYWALL_REQUEST_RETRIES)}">
+        <label>ML_RETRAIN_THRESHOLD_BYTES</label>
+        <input id="g_ML_RETRAIN_THRESHOLD_BYTES" class="wide-number" type="number" min="0" step="1" value="${escapeHtml(g.ML_RETRAIN_THRESHOLD_BYTES)}">
+        <label>ML_NEGATIVE_WEIGHT</label>
+        <input id="g_ML_NEGATIVE_WEIGHT" class="wide-number" type="number" min="0" step="0.01" value="${escapeHtml(g.ML_NEGATIVE_WEIGHT)}">
+        <label>ML_NEGATIVE_CAP_MULTIPLIER</label>
+        <input id="g_ML_NEGATIVE_CAP_MULTIPLIER" class="wide-number" type="number" min="0" step="0.1" value="${escapeHtml(g.ML_NEGATIVE_CAP_MULTIPLIER)}">
+      </div>
+    </details>`;
+}
+
+// ------------------------------------------------------------- open/close
+async function openSettings() {
+  const overlay = document.getElementById('settings-overlay');
+  if (!overlay) return;
+  overlay.hidden = false;
+  setSettingsStatus('', '');
+  const content = settingsContent();
+  content.innerHTML = '<p>Lade Einstellungen…</p>';
+  const saveBtn = document.getElementById('settings-save-btn');
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    const resp = await fetch(`${settingsBasePath()}/settings`);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    settingsState = await resp.json();
+    content.innerHTML = buildSettingsForm(settingsState);
+    if (saveBtn) saveBtn.disabled = false;
+  } catch (err) {
+    content.innerHTML = '<p class="settings-hint" style="color:var(--accent-red);">Fehler beim Laden der Einstellungen.</p>';
+    setSettingsStatus(`Konnte Einstellungen nicht laden: ${err.message}`, 'err');
+  }
+}
+
+function closeSettings() {
+  const overlay = document.getElementById('settings-overlay');
+  if (overlay) overlay.hidden = true;
+  setSettingsStatus('', '');
+}
+
+// ----------------------------------------------------------------- save
+async function saveSettings() {
+  commitDomEdits();
+  if (!settingsState) return;
+  const saveBtn = document.getElementById('settings-save-btn');
+  if (saveBtn) saveBtn.disabled = true;
+  const payload = {
+    settings: settingsState.settings || {},
+    feeds: settingsState.feeds || [],
+    global: settingsState.global || {},
+  };
+  setSettingsStatus('Speichere…', 'ok');
+  try {
+    const resp = await fetch(`${settingsBasePath()}/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      let msg = `Speichern fehlgeschlagen (HTTP ${resp.status})`;
+      try {
+        const j = await resp.json();
+        if (j && j.details) msg += ': ' + (Array.isArray(j.details) ? j.details.join('; ') : j.error || '');
+        else if (j && j.error) msg += ': ' + j.error;
+      } catch (e) { /* ignore */ }
+      setSettingsStatus(msg, 'err');
+      if (saveBtn) saveBtn.disabled = false;
+      return;
+    }
+    setSettingsStatus('Gespeichert. Aktualisiere…', 'ok');
+    // Immediate re-render so the new settings take effect right away.
+    try {
+      await fetch(`${settingsBasePath()}/refresh`, { method: 'POST' });
+    } catch (e) { /* refresh failure is non-fatal for persistence */ }
+    // Reload to display the freshly rendered data.
+    window.location.reload();
+  } catch (err) {
+    setSettingsStatus(`Netzwerkfehler beim Speichern: ${err.message}`, 'err');
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}

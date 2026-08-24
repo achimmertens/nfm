@@ -17,6 +17,7 @@ from apscheduler.triggers.cron import CronTrigger
 import app.conf.config as config
 from app.core.feedmgr import NewsFeedManager
 from app.core.loghandler import logger
+from app.core.settings_store import SettingsStore, GLOBAL_KEYS
 import app.conf.logging_config as logging_config
 
 # Read version from pyproject.toml
@@ -24,11 +25,20 @@ with open("pyproject.toml", "rb") as f:
     pyproject_data = tomllib.load(f)
     APP_VERSION = pyproject_data["project"]["version"]
 
+# Runtime settings store: overlays config.py defaults with the contents of
+# runtime-settings.json (path via config.RUNTIME_SETTINGS_FILE or the
+# NFM_RUNTIME_SETTINGS env var) and persists per-user/global edits made through
+# the settings GUI (GET/PUT /{uid}/settings). Instantiated here (module import
+# == app start) and handed to the NewsFeedManager, whose NewsFeedUser instances
+# read filter/feed values live from the store on every render cycle.
+settings_store = SettingsStore()
+
 # Initialize NewsFeedManager
 nfm = NewsFeedManager(
     config.user_cfgs,
     limit=config.LIMIT,
-    hours_back=config.HOURS_BACK
+    hours_back=config.HOURS_BACK,
+    settings_store=settings_store,
 )
 
 
@@ -91,7 +101,12 @@ async def lifespan(app: FastAPI):
     """Manage application lifespan"""
     # Startup
     logger.info("Application startup: initializing scheduler")
-    
+
+    # Re-read the runtime settings file (if present) so that edits made while
+    # the process was stopped are picked up. Idempotent: merges on top of the
+    # config.py defaults again.
+    settings_store.load()
+
     # Add the periodic job for updating render data
     scheduler.add_job(
         update_render_data,
@@ -160,6 +175,7 @@ async def root(request: Request, uid: str, limit: int = 10, hours_back: int = 24
                 "deploy_manifest": config.DEPLOY_MANIFEST,
                 "app_version": APP_VERSION,
                 "uninteresting_lids": uninteresting_lids,
+                "show_settings_ui": True,
             },
         )
     else:
@@ -222,6 +238,230 @@ async def save_negative_samples(uid: str, request: Request):
     except Exception as e:
         logger.exception(f"[{uid}] save_negative_samples: error processing request")
         return {"error": str(e)}, 500
+
+
+# ---------------------------------------------------------------------------
+# Settings API
+# ---------------------------------------------------------------------------
+# Per-user setting keys accepted by PUT /{uid}/settings, and their expected
+# JSON types. Unknown keys in the "settings" block are rejected (422).
+_STRING_LIST_KEYS = (
+    "blacklist_link",
+    "blacklist_title",
+    "highlight_keywords",
+    "recipients",
+    "consumption_modes",
+)
+_SORT_ORDER_KEY = "source_sort_order"
+
+# Global keys exposed to the settings GUI and their expected JSON types.
+# "int"      -> integer (not bool)
+# "number"   -> int or float (not bool)
+# "bool"     -> boolean
+# "strlist"  -> list of strings
+# "cron"     -> {"hour": "HH", "minute": "MM"} (strings)
+_GLOBAL_VALIDATORS = {
+    "LIMIT": "int",
+    "HOURS_BACK": "int",
+    "SOURCE_FILTER": "strlist",
+    "CRONTRIGGER": "cron",
+    "ENABLE_HIDE_UNREAD": "bool",
+    "DEPLOY_MANIFEST": "bool",
+    "PAYWALL_SCORE_THRESHOLD": "int",
+    "PAYWALL_REQUEST_TIMEOUT_SECONDS": "int",
+    "PAYWALL_REQUEST_RETRIES": "int",
+    "ML_TAG_ENABLED": "bool",
+    "ML_TAG_THRESHOLD": "number",
+    "ML_RETRAIN_THRESHOLD_BYTES": "int",
+    "ML_NEGATIVE_WEIGHT": "number",
+    "ML_NEGATIVE_CAP_MULTIPLIER": "number",
+}
+
+
+async def _request_json(request: Request):
+    """Parse a JSON request body; return (data, error_message)."""
+    try:
+        return await request.json(), None
+    except Exception:
+        return None, "Request body must be valid JSON"
+
+
+def _validate_string_list(value, errs, path):
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        errs.append(f"{path}: must be a list of strings")
+
+
+def _validate_settings_block(settings, uid, errs):
+    """Strictly validate the "settings" block of a PUT /{uid}/settings body."""
+    if not isinstance(settings, dict):
+        errs.append("settings: must be an object")
+        return
+    for key, value in settings.items():
+        if key == "uid":
+            if value != uid:
+                errs.append("settings.uid: must match the uid in the URL path")
+            continue
+        if key in _STRING_LIST_KEYS:
+            _validate_string_list(value, errs, f"settings.{key}")
+        elif key == _SORT_ORDER_KEY:
+            if not isinstance(value, dict) or not all(
+                isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+                for k, v in value.items()
+            ):
+                errs.append(
+                    f"settings.{key}: must be an object mapping source name -> integer"
+                )
+        else:
+            errs.append(f"settings.{key}: unknown setting key")
+
+
+def _validate_feed(feed, idx, errs):
+    """Strictly validate one entry of the "feeds" list."""
+    if not isinstance(feed, dict):
+        errs.append(f"feeds[{idx}]: must be an object")
+        return
+    for req in ("source", "url", "topic"):
+        value = feed.get(req)
+        if not isinstance(value, str) or not value.strip():
+            errs.append(f"feeds[{idx}].{req}: required non-empty string")
+    if "check_paywall" in feed and not isinstance(feed["check_paywall"], bool):
+        errs.append(f"feeds[{idx}].check_paywall: must be a boolean")
+    if "desc_filter" in feed and not isinstance(feed["desc_filter"], str):
+        errs.append(f"feeds[{idx}].desc_filter: must be a string")
+    for key in feed:
+        if key not in ("source", "url", "topic", "check_paywall", "desc_filter"):
+            errs.append(f"feeds[{idx}].{key}: unknown feed key")
+
+
+def _validate_global_block(global_, errs):
+    """Strictly validate the optional "global" block of a PUT body."""
+    if not isinstance(global_, dict):
+        errs.append("global: must be an object")
+        return
+    for key, value in global_.items():
+        if key not in GLOBAL_KEYS:
+            errs.append(f"global.{key}: unknown global key")
+            continue
+        kind = _GLOBAL_VALIDATORS.get(key)
+        if kind == "int":
+            if not isinstance(value, int) or isinstance(value, bool):
+                errs.append(f"global.{key}: must be an integer")
+        elif kind == "number":
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                errs.append(f"global.{key}: must be a number")
+        elif kind == "bool":
+            if not isinstance(value, bool):
+                errs.append(f"global.{key}: must be a boolean")
+        elif kind == "strlist":
+            _validate_string_list(value, errs, f"global.{key}")
+        elif kind == "cron":
+            if not isinstance(value, dict):
+                errs.append(f"global.{key}: must be an object with 'hour' and 'minute'")
+            else:
+                h, m = value.get("hour"), value.get("minute")
+                if not isinstance(h, str) or not isinstance(m, str) or not h.strip() or not m.strip():
+                    errs.append(
+                        f"global.{key}: 'hour' and 'minute' must be non-empty strings"
+                    )
+
+
+def _settings_payload(uid: str):
+    """Merged settings payload for the settings GUI, or None if uid unknown."""
+    user = settings_store.get_user(uid)
+    if user is None:
+        return None
+    settings = user.get("settings", {})
+    payload = {
+        "uid": uid,
+        "settings": settings,
+        "feeds": user.get("feeds", []),
+    }
+    if _SORT_ORDER_KEY in settings:
+        payload[_SORT_ORDER_KEY] = settings[_SORT_ORDER_KEY]
+    payload["global"] = settings_store.get_global()
+    return payload
+
+
+@app.get("/{uid}/settings")
+async def get_settings(uid: str):
+    """Return the merged (defaults + runtime overlay) settings for a user."""
+    payload = _settings_payload(uid)
+    if payload is None:
+        logger.warning(f"get_settings: uid {uid} not found")
+        return {"error": "User not found"}, 404
+    return payload
+
+
+@app.put("/{uid}/settings")
+async def put_settings(uid: str, request: Request):
+    """Validate and persist settings for a user.
+
+    Body (all fields optional, at least one expected):
+        {
+          "settings": {  # keys from USER_SETTING_KEYS, strictly typed
+            "blacklist_link": [...], "blacklist_title": [...],
+            "highlight_keywords": [...], "recipients": [...],
+            "consumption_modes": [...], "source_sort_order": {src: int}
+          },
+          "feeds": [{source, url, topic, check_paywall?, desc_filter?}],
+          "global": {LIMIT?, HOURS_BACK?, ...}  # optional, applied immediately
+        }
+    Invalid payloads are rejected with 422 and nothing is persisted.
+    """
+    if uid not in nfm.news_feed_users_by_uid:
+        logger.warning(f"put_settings: uid {uid} not found")
+        return {"error": "User not found"}, 404
+
+    body, err = await _request_json(request)
+    if err:
+        return {"error": err}, 422
+    if not isinstance(body, dict):
+        return {"error": "Body must be a JSON object"}, 422
+
+    errs = []
+    settings = body.get("settings")
+    feeds = body.get("feeds")
+    global_ = body.get("global")
+
+    if settings is not None:
+        _validate_settings_block(settings, uid, errs)
+    if feeds is not None:
+        if not isinstance(feeds, list):
+            errs.append("feeds: must be a list")
+        else:
+            for idx, feed in enumerate(feeds):
+                _validate_feed(feed, idx, errs)
+    if global_ is not None:
+        _validate_global_block(global_, errs)
+
+    if errs:
+        return {"error": "Validation failed", "details": errs}, 422
+
+    if not settings_store.update_user(
+        uid, settings=settings, feeds=feeds, global_=global_
+    ):
+        logger.warning(f"put_settings: store rejected uid {uid}")
+        return {"error": "User not found"}, 404
+
+    logger.info(f"[{uid}] settings updated via API")
+    return {"message": "Settings saved", "uid": uid}
+
+
+@app.post("/{uid}/refresh")
+async def refresh_uid(uid: str):
+    """Trigger an immediate re-render for a user (fetch feeds + filters + dedup).
+
+    Called by the settings GUI after a successful PUT so that changed settings
+    take effect right away instead of waiting for the hourly scheduled job.
+    """
+    nfu = nfm.get_news_feed_user(uid)
+    if not nfu:
+        logger.warning(f"refresh: uid {uid} not found")
+        return {"error": "User not found"}, 404
+    logger.info(f"[{uid}] manual refresh triggered")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, nfu.update_render_data)
+    return {"message": "Render data refreshed", "uid": uid}
 
 
 

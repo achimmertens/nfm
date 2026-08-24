@@ -2,6 +2,14 @@
 
 # Path to the secrets file containing sensitive information (e.g., email credentials)
 SECRETS_FILE = "secrets.json"
+
+# Path (absolute, or relative to the process working directory) of the JSON file
+# that holds per-user and global runtime settings. At startup the app loads the
+# defaults from this config module and overlays them with the contents of this
+# file, if present. The path can be overridden via the environment variable
+# `NFM_RUNTIME_SETTINGS` (recommended in container deployments, where the file
+# should live on a persisted, bind-mounted path). See app/core/settings_store.py.
+RUNTIME_SETTINGS_FILE = "runtime-settings.json"
 # Set to True to use precomputed render data for testing
 USE_PRECOMPUTED_RENDER_DATA = False
 # Number of feeds to fetch
