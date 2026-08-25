@@ -1084,3 +1084,28 @@ async function saveSettings() {
     if (saveBtn) saveBtn.disabled = false;
   }
 }
+
+async function reloadApp() {
+  // Reload config.py at runtime (new portals/feeds) and re-render all news.
+  const btn = document.getElementById('settings-reload-btn');
+  if (btn) btn.disabled = true;
+  setSettingsStatus('Lade Konfiguration neu…', 'ok');
+  try {
+    const resp = await fetch(`${settingsBasePath()}/reload`, { method: 'POST' });
+    if (!resp.ok) {
+      let msg = `Neuladen fehlgeschlagen (HTTP ${resp.status})`;
+      try {
+        const j = await resp.json();
+        if (j && j.error) msg += ': ' + j.error;
+      } catch (e) { /* ignore */ }
+      setSettingsStatus(msg, 'err');
+      if (btn) btn.disabled = false;
+      return;
+    }
+    setSettingsStatus('Konfiguration neu geladen. Aktualisiere…', 'ok');
+    window.location.reload();
+  } catch (err) {
+    setSettingsStatus(`Netzwerkfehler beim Neuladen: ${err.message}`, 'err');
+    if (btn) btn.disabled = false;
+  }
+}

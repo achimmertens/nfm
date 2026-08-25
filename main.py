@@ -3,8 +3,10 @@
 # https://stackoverflow.com/questions/384076/how-can-i-color-python-logging-output
 
 import asyncio
+import importlib
 import tomllib
 import uvicorn
+from copy import deepcopy
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, FileResponse
@@ -463,6 +465,63 @@ async def refresh_uid(uid: str):
     await loop.run_in_executor(None, nfu.update_render_data)
     return {"message": "Render data refreshed", "uid": uid}
 
+
+@app.post("/{uid}/reload")
+async def reload_uid(uid: str):
+    """Reload config.py at runtime and rebuild the feed manager.
+
+    Unlike /refresh (which only re-renders the existing feeds), this endpoint
+    re-imports the config module so newly added portals in config.py become
+    effective without a container restart. config.py becomes the authoritative
+    source for the feed list, while the other runtime settings (blacklist,
+    highlight keywords, sort order, recipients) are preserved. The updated feed
+    list is persisted to the runtime settings file so a later restart stays
+    consistent.
+    """
+    global settings_store, nfm
+    try:
+        reloaded = importlib.reload(config)
+    except Exception:
+        logger.exception("[{}] reload: failed to re-import config.py".format(uid))
+        return {"error": "Failed to reload config.py"}, 500
+
+    try:
+        # 1. Rebuild the store from the fresh config defaults. load() overlays
+        #    the runtime file, which may carry a stale feed list.
+        new_store = SettingsStore(user_cfgs=reloaded.user_cfgs)
+
+        # 2. config.py is authoritative for the feed list -> re-assert its feeds
+        #    for every known user (keeps blacklist/keywords/sort/recipients).
+        for ucfg in reloaded.user_cfgs or []:
+            suid = (ucfg.get("settings") or {}).get("uid")
+            if not suid:
+                continue
+            if suid in new_store._user_by_uid:
+                new_store._user_by_uid[suid]["feeds"] = deepcopy(ucfg.get("feeds") or [])
+
+        # 3. Persist so that a later restart keeps the config.py feed list.
+        new_store.save()
+
+        # 4. Rebuild the manager against the fresh config + store.
+        new_nfm = NewsFeedManager(
+            reloaded.user_cfgs,
+            limit=reloaded.LIMIT,
+            hours_back=reloaded.HOURS_BACK,
+            settings_store=new_store,
+        )
+        settings_store = new_store
+        nfm = new_nfm
+
+        # 5. Re-render the requested user (and web consumers) immediately.
+        loop = asyncio.get_event_loop()
+        nfu = nfm.get_news_feed_user(uid)
+        if nfu:
+            await loop.run_in_executor(None, nfu.update_render_data)
+            logger.info("[{}] config reloaded and re-rendered".format(uid))
+        return {"message": "Config reloaded", "uid": uid}
+    except Exception:
+        logger.exception("[{}] reload rebuild failed".format(uid))
+        return {"error": "Reload rebuild failed"}, 500
 
 
 if __name__ == "__main__":
