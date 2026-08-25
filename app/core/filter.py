@@ -89,3 +89,18 @@ def desc_filter_heise(desc: str) -> str:
             x = x.split(sep)[0]
             break
     return x.strip()
+
+
+def desc_filter_netzpolitik(desc: str) -> str:
+    """Filter description for Netzpolitik feeds (strip HTML)."""
+    return _remove_html_tags(desc).strip()
+
+
+def desc_filter_t3n(desc: str) -> str:
+    """Filter description for t3n feeds (strip HTML + trailing boilerplate)."""
+    x = _remove_html_tags(desc).strip()
+    for sep in (" (Weiterlesen", " (weiterlesen", " Weiterlesen", " …"):
+        if sep in x:
+            x = x.split(sep)[0]
+            break
+    return x.strip()
