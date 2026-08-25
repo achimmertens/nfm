@@ -800,7 +800,8 @@ function commitDomEdits() {
   if (sortList) {
     const map = {};
     sortList.querySelectorAll('.sort-row').forEach(row => {
-      const name = row.getAttribute('data-sort-name') || '';
+      const nameEl = row.querySelector('input.sort-name');
+      const name = nameEl ? (nameEl.value || '').trim() : (row.getAttribute('data-sort-name') || '');
       const numEl = row.querySelector('input[type="number"]');
       const v = numEl ? parseInt(numEl.value, 10) : NaN;
       if (name && !isNaN(v)) map[name] = v;
@@ -899,6 +900,17 @@ function addSortRow() {
   rerenderForm();
 }
 
+function removeSortRow(btn) {
+  commitDomEdits();
+  const row = btn.closest('.sort-row');
+  const nameEl = row ? row.querySelector('input.sort-name') : null;
+  const name = nameEl ? (nameEl.value || '').trim() : (row ? row.getAttribute('data-sort-name') : '');
+  if (name && settingsState.settings && settingsState.settings.source_sort_order) {
+    delete settingsState.settings.source_sort_order[name];
+  }
+  rerenderForm();
+}
+
 // ------------------------------------------------------------ form build
 function buildSettingsForm(payload) {
   const s = payload.settings || {};
@@ -912,8 +924,9 @@ function buildSettingsForm(payload) {
   const sortRowsHtml = sortKeys.length
     ? sortKeys.map(name =>
         `<div class="sort-row" data-sort-name="${escapeHtml(name)}">` +
-        `<span>${escapeHtml(name)}</span>` +
-        `<input type="number" min="0" step="1" value="${escapeHtml(sortMap[name])}"></div>`
+        `<input type="text" class="sort-name" value="${escapeHtml(name)}">` +
+        `<input type="number" min="0" step="1" value="${escapeHtml(sortMap[name])}">` +
+        `<button type="button" class="feed-del" onclick="removeSortRow(this)">✕</button></div>`
       ).join('')
     : '<span class="settings-hint">(keine Quellenreihenfolge definiert)</span>';
 
