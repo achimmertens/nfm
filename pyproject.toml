@@ -1,6 +1,6 @@
 [project]
 name = "nfm"
-version = "0.4.2"
+version = "0.4.3"
 description = "NewsFeedManager"
 readme = "README.md"
 requires-python = ">=3.11"
