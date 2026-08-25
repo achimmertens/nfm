@@ -78,3 +78,14 @@ def desc_filter_gs(desc: str) -> str:
 def desc_filter_fr(desc: str) -> str:
     """Filter description for FR feeds."""
     return _remove_html_tags(desc)
+
+
+def desc_filter_heise(desc: str) -> str:
+    """Filter description for Heise feeds (strip HTML + trailing link boilerplate)."""
+    x = _remove_html_tags(desc).strip()
+    # Heise descriptions often end with a ' (Weiterlesen…)' / link suffix.
+    for sep in (" (Weiterlesen", " (weiterlesen", " Weiterlesen", " …"):
+        if sep in x:
+            x = x.split(sep)[0]
+            break
+    return x.strip()
