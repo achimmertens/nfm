@@ -11,6 +11,16 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Build on disk, not on the small tmpfs (/tmp is only ~4G on the Pi and podman
+# stores build blobs there -> "no space left on device" + lost layer cache on
+# large rebuilds). Use $TMPDIR if the caller set one, otherwise fall back to a
+# dedicated dir on the root filesystem. Overridable via env.
+: "${TMPDIR:=${REPO_ROOT}/../podman-tmp}"
+TMPDIR_BUILD="${TMPDIR}"
+mkdir -p "${TMPDIR_BUILD}"
+export TMPDIR="${TMPDIR_BUILD}"
+echo ">>> Build TMPDIR: ${TMPDIR_BUILD}"
+
 if ! command -v git >/dev/null 2>&1; then
     echo "ERROR: git not found on build host - required for version traceability." >&2
     exit 1
