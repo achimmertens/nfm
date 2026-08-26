@@ -4,8 +4,10 @@
 
 import asyncio
 import importlib
+import subprocess
 import tomllib
 import uvicorn
+from pathlib import Path
 from copy import deepcopy
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -22,10 +24,59 @@ from app.core.loghandler import logger
 from app.core.settings_store import SettingsStore, GLOBAL_KEYS
 import app.conf.logging_config as logging_config
 
-# Read version from pyproject.toml
-with open("pyproject.toml", "rb") as f:
-    pyproject_data = tomllib.load(f)
-    APP_VERSION = pyproject_data["project"]["version"]
+# --- Automatic version resolution ---
+# The visible app version is resolved automatically with a robust fallback
+# chain so it stays traceable to the exact commit on every build without
+# manual version bumps in pyproject.toml:
+#   1. A build-time-baked VERSION file (written by the Docker build via the
+#      GIT_VERSION build-arg -> /app/VERSION). Primary source in the image.
+#   2. `git describe --tags --always --dirty` (only when .git + git are
+#      present, e.g. when running straight from a repo checkout / dev mode).
+#   3. pyproject.toml version + "-local" marker as a last-resort fallback.
+# Never crashes if git/VERSION are unavailable.
+_VERSION_FILE = Path("/app/VERSION")
+
+
+def _read_version_file() -> str | None:
+    """Read the build-time-baked VERSION file if present."""
+    try:
+        if _VERSION_FILE.exists():
+            v = _VERSION_FILE.read_text().strip()
+            if v:
+                return v
+    except OSError:
+        pass
+    return None
+
+
+def _read_git_version() -> str | None:
+    """Best-effort `git describe`; None when git or .git is missing."""
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode == 0:
+            v = result.stdout.strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return None
+
+
+def _read_pyproject_version() -> str:
+    with open("pyproject.toml", "rb") as f:
+        return tomllib.load(f)["project"]["version"]
+
+
+APP_VERSION = (
+    _read_version_file()
+    or _read_git_version()
+    or f"{_read_pyproject_version()}-local"
+)
 
 # Runtime settings store: overlays config.py defaults with the contents of
 # runtime-settings.json (path via config.RUNTIME_SETTINGS_FILE or the

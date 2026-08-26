@@ -158,6 +158,13 @@ tests/                     # Test suite
 
 ## Notes
 
+- **Automatic versioning:** The visible page version (footer `v…`) is resolved
+  automatically on every build and stays traceable to a commit. The Docker
+  build bakes `GIT_VERSION = $(git describe --tags --always --dirty)-<build-date>`
+  into `/app/VERSION` (see `build/build.sh` and the Dockerfile `ARG`). `main.py`
+  reads it at runtime with a fallback chain: VERSION file → `git describe`
+  (dev checkouts) → pyproject.toml version + `-local`. No manual version bump
+  needed.
 - Optimized for low-resource deployment; uses a CPU-only PyTorch build and a small (~80MB) multilingual sentence-transformer model.
 - German-language focus out of the box (stopwords, default keywords, news sources), but fully configurable for other languages via `app/conf/config.py`.
 - `secrets/secrets.json`, click-tracking data, and trained ML models are git-ignored and machine/user-specific — never commit real credentials.
