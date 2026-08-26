@@ -170,6 +170,54 @@ summary::-webkit-details-marker {
   opacity: 0.6;
 }
 
+.source-description {
+  font-size: 0.65em;
+  font-weight: normal;
+  opacity: 0.85;
+  color: var(--text-summary);
+  margin-top: 2px;
+}
+
+/* ========== Render-Progress Banner ========== */
+#render-progress-banner {
+  position: sticky;
+  top: 0;
+  z-index: 999;
+  margin: 10px 0;
+  padding: 10px 16px;
+  background: var(--bg-separator);
+  border: 1px solid var(--accent-blue);
+  border-radius: 8px;
+  color: var(--text-summary);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.render-progress-inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 14px;
+}
+.render-progress-text {
+  font-weight: bold;
+}
+.render-progress-detail {
+  opacity: 0.85;
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: render-spin 0.9s linear infinite;
+}
+@keyframes render-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ========== News Items ========== */
 .news-item {
   margin-bottom: 25px;

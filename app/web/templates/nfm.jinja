@@ -44,6 +44,17 @@
 
 <body>
 
+  <!-- ========== Render-Progress Banner ========== -->
+  {% if data and data.get("render_status") and data["render_status"].get("status") != "done" %}
+  <div id="render-progress-banner" data-uid="{{ data.get('uid', '') }}">
+    <div class="render-progress-inner">
+      <span class="spinner"></span>
+      <span class="render-progress-text">Feeds werden analysiert… {{ data["render_status"].get("percent", 0) }}%</span>
+      <span class="render-progress-detail">{{ data["render_status"].get("message", "") }}</span>
+    </div>
+  </div>
+  {% endif %}
+
   <!-- ========== Navigation ========== -->
   <div class="navbar">
     <a href="#" onclick="event.preventDefault(); filterNewsItems(6);">6h</a>
@@ -147,7 +158,12 @@
     {% set non_duplicate_entries = entries|rejectattr('is_duplicate')|list %}
     {% if non_duplicate_entries|length > 0 %}
     <details data-storage-key="{{feed_source}}">
-      <summary>{{feed_source}} <span class="entry-length">[{{ non_duplicate_entries|length }}]</span></summary>
+      <summary>
+        {{feed_source}} <span class="entry-length">[{{ non_duplicate_entries|length }}]</span>
+        {% if data.get("source_descriptions", {}).get(feed_source) %}
+        <div class="source-description">{{ data["source_descriptions"][feed_source] }}</div>
+        {% endif %}
+      </summary>
       <hr>
       {% for entry in entries %}
         {{ render_news_item(entry, data) }}

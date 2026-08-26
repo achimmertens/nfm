@@ -1109,3 +1109,34 @@ async function reloadApp() {
     if (btn) btn.disabled = false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Render-Progress banner (cold start / reload)
+// ---------------------------------------------------------------------------
+
+async function pollRenderStatus() {
+  const banner = document.getElementById('render-progress-banner');
+  if (!banner) return;
+  const uid = banner.dataset.uid || '';
+  if (!uid) return;
+  try {
+    const resp = await fetch(`/${uid}/render_status`, { cache: 'no-store' });
+    if (!resp.ok) return;
+    const st = await resp.json();
+    const pct = st.percent ?? 0;
+    const detail = st.message || '';
+    const textEl = banner.querySelector('.render-progress-text');
+    const detailEl = banner.querySelector('.render-progress-detail');
+    if (textEl) textEl.textContent = `Feeds werden analysiert… ${pct}%`;
+    if (detailEl) detailEl.textContent = `${detail} (${st.done_feeds || 0}/${st.total_feeds || 0})`;
+    if (st.status === 'done') {
+      // Render finished: hide banner and reload so the full list appears.
+      banner.style.display = 'none';
+      window.location.reload();
+      return;
+    }
+  } catch (e) { /* transient; keep polling */ }
+  setTimeout(pollRenderStatus, 3000);
+}
+
+document.addEventListener('DOMContentLoaded', pollRenderStatus);

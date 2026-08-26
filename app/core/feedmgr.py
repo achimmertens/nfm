@@ -17,6 +17,12 @@ from app.core.render import render_app
 logger = logging.getLogger(__name__)
 
 class NewsFeedUser:
+    # Shared across instances (survives config-reload manager rebuilds):
+    # uid -> last fully rendered story pool (duplicates + ML). Incremental
+    # previews read this so "similar articles" stay visible while a fresh
+    # render cycle is still analysing, even when /reload rebuilt the manager.
+    _last_complete_by_uid: Dict[str, Dict] = {}
+
     def __init__(
             self,
             uid: str,
@@ -39,7 +45,41 @@ class NewsFeedUser:
         self._blacklist_title = blacklist_title
         self._highlight_keywords = highlight_keywords
         self._hours_back = hours_back
-        self.render_data = {}
+        self.render_data = {
+            # Empty-but-valid placeholder so the template can render during the
+            # window between cold start and the first published preview (the
+            # initial render runs in the background). Without this, GET /{uid}
+            # raises jinja2 UndefinedError: 'dict object' has no attribute
+            # 'by_source' for the first seconds after a restart.
+            "by_source": {},
+            "by_topic": {},
+            "by_lid": {},
+            "source_descriptions": {},
+            "new_entries": 0,
+            "n_highlighted": 0,
+            "n_ml_tagged": 0,
+            "n_filtered": 0,
+            "date": datetime.now(pytz.timezone('Europe/Berlin')).strftime("%d.%m.%Y %H:%M"),
+            "hours_back": hours_back,
+            "uid": uid,
+        }
+        # Last fully rendered story pool (after duplicate detection + ML).
+        # Kept across render cycles so the incremental preview can keep showing
+        # the last known duplicate sets while the JSON run is still analysing.
+        self._last_complete_by_lid = self._last_complete_by_uid.get(self._uid)
+        # Progress of the current render (used by the frontend banner while the
+        # feeds are being analysed after a cold start / reload).
+        self.render_status = {
+            "status": "idle",
+            "phase": "",
+            "percent": 0,
+            "current_source": "",
+            "current_topic": "",
+            "done_feeds": 0,
+            "total_feeds": 0,
+            "message": "",
+            "uid": uid,
+        }
         # Optional runtime settings store. When set, filter/feed values are
         # read live from the store on every render cycle, so GUI changes take
         # effect on the next update (or forced refresh) without a restart.
@@ -79,6 +119,211 @@ class NewsFeedUser:
             if feeds is not None:
                 return self._apply_feed_selection(feeds)
         return dict(self._user_feeds_by_url)
+
+    def _source_descriptions(self) -> Dict[str, str]:
+        """Map of source name -> description.
+
+        Looked up from the runtime feed pool first, falling back to the
+        config.py defaults, so descriptions are available even when the
+        runtime overlay carries a feed list without them.
+        """
+        descriptions: Dict[str, str] = {}
+        # 1) config.py defaults
+        for ucfg in getattr(config, "user_cfgs", []) or []:
+            if (ucfg.get("settings") or {}).get("uid") != self._uid:
+                continue
+            for feed in ucfg.get("feeds", []) or []:
+                desc = feed.get("description")
+                if desc:
+                    descriptions.setdefault(feed.get("source"), desc)
+        # 2) runtime feed pool (may add/override)
+        for feed in self._current_feeds_by_url().values():
+            desc = feed.get("description")
+            if desc:
+                descriptions.setdefault(feed["source"], desc)
+        return descriptions
+
+    _BREAKING_TOPIC = "Eilmeldungen"
+
+    def _is_breaking_news(self, story, feed_topic: str) -> bool:
+        """Decide whether a story qualifies as a breaking-news ("Eilmeldung")
+        article according to the source-specific rules requested by the user.
+
+        Rules (case-insensitive title matching):
+          * Spiegel : "eilmeldung" in title  OR  comes from the dedicated
+                      Eilmeldungen feed (``feed_topic == "Eilmeldungen"``).
+          * Tagesschau : "+++" in title. (+++ is the central breaking marker;
+                      the very-short-age rule is intentionally NOT enforced here
+                      because JEDE Tagesschau-Kurzmeldung nutzt +++ – ein
+                      zusätzlicher Altersfilter würde echte +++-Titel fälschlich
+                      ausblenden, wenn sie einige Minuten alt sind. Die
+                      Erkennung über +++ allein ist zuverlässiger/erklärbarer.)
+          * Heise : "update" in title  AND  published < 30 minutes ago.
+          * Golem : "eilmeldung" OR "breaking" in title.
+          * n-tv  : title starts with "breaking" (prefix).
+          * DW    : "eilmeldung" in title.
+        Sources without a rule (T-online, Stern, Focus …) return False.
+
+        NOTE on the ``hours_ago`` unit (verified in app/core/tools.py
+        ``timediff_filter``): ``entry.hours_ago = int(...)`` — it is an INTEGER
+        number of full hours (0 for anything < 1h). It therefore CANNOT express
+        "< 30 minutes". For the Heise rule we use the exact UTC epoch stored on
+        the story as ``pub_ts`` (a UTC timestamp added at ingest). NB: the
+        human-readable ``pub_date`` string holds the feed's WALL-CLOCK time (its
+        timezone offset was dropped by strftime), so it must NOT be re-localised
+        as UTC for age math — that would misinterpret local times as UTC and
+        produce wrong (often negative) ages. ``pub_ts`` avoids that entirely.
+        """
+        title = (story.get("title") or "").lower()
+        source = story.get("source") or ""
+        if source == "Spiegel":
+            if feed_topic == "Eilmeldungen":
+                return True
+            return "eilmeldung" in title
+        if source == "Tagesschau":
+            return "+++" in title
+        if source == "Heise":
+            if "update" not in title:
+                return False
+            # Exact <30 min check via the UTC epoch timestamp stored at ingest.
+            ts = story.get("pub_ts")
+            if ts is None:
+                # Fallback without precise age: do NOT guess <30 min.
+                return False
+            return (datetime.now(pytz.utc).timestamp() - ts) < 1800
+        if source == "Golem":
+            return "eilmeldung" in title or "breaking" in title
+        if source == "n-tv":
+            return title.startswith("breaking")
+        if source == "DW":
+            return "eilmeldung" in title
+        return False
+
+    def _group_render_data(self, stories_by_lid: Dict):
+        """Build the by_source / by_topic grouping from a story pool.
+
+        Duplicate stories are excluded from the grouping. Breaking-news
+        ("Eilmeldungen") articles are grouped BOTH under their real topic AND
+        under an additional ``by_topic["Eilmeldungen"]`` bucket. The real
+        ``topic`` field of every story stays untouched (extra grouping only).
+        """
+        by_source = {}
+        by_topic = {}
+        for story in stories_by_lid.values():
+            if story.get("is_duplicate", False):
+                continue
+            by_source.setdefault(story["source"], []).append(story)
+            by_topic.setdefault(story["topic"], []).append(story)
+            # Breaking-news bucket (in addition, never in place of the topic).
+            # Guard: if the story's real topic already IS "Eilmeldungen" (e.g.
+            # Spiegel-Eilmeldungen-Feed), it is already in that bucket via the
+            # normal assignment – adding it again would double it.
+            if (self._is_breaking_news(story, story["topic"])
+                    and story["topic"] != self._BREAKING_TOPIC):
+                by_topic.setdefault(self._BREAKING_TOPIC, []).append(story)
+        for source in by_source:
+            by_source[source].sort(key=lambda item: (
+                item["topic"], -len(item.get("duplicates", [])), item["hours_ago"]))
+        for topic in by_topic:
+            by_topic[topic].sort(key=lambda item: (
+                -len(item.get("duplicates", [])), item["hours_ago"]))
+        # Ensure "Eilmeldungen" sorts first (by_topic is insertion-ordered).
+        if self._BREAKING_TOPIC in by_topic:
+            by_topic = {self._BREAKING_TOPIC: by_topic[self._BREAKING_TOPIC],
+                        **{k: v for k, v in by_topic.items()
+                           if k != self._BREAKING_TOPIC}}
+        return by_source, by_topic
+
+    def _preview_merged_stories(self):
+        """Build the by_lid story pool shown during a running render.
+
+        Duplicate detection (and ML tagging) only run AFTER all feeds are
+        fetched, so intermediate previews would otherwise expose every story
+        with an empty ``duplicates`` list and the "similar articles" blocks
+        vanish for minutes. To fix this we reuse the last fully rendered pool
+        (``_last_complete_by_lid``): for each fresh story we copy over its last
+        known duplicate set, matched by ``link``.
+
+        Safety: a duplicate set is only copied when every referenced LID still
+        exists in the fresh preview pool so the Jinja ``data['by_lid'][lid]``
+        lookup can never raise a KeyError. A story is only flagged as a
+        duplicate when it is actually referenced by a retained head in this
+        preview, otherwise it stays visible on its own.
+
+        ``_stories_by_lid`` itself is left untouched (we write to copies) so
+        the real duplicate detection in ``update_render_data`` still operates
+        on pristine data.
+        """
+        pool = self._stories_by_lid
+        last_good = self._last_complete_by_lid
+        if not last_good:
+            # No previous finished render yet: expose the fresh pool as-is.
+            return pool
+        last_by_link = {
+            s.get("link"): s for s in last_good.values() if s.get("link")
+        }
+        merged = {}
+        referenced = set()  # lids that some retained head points to
+        for lid, story in pool.items():
+            m = dict(story)
+            dup_lids = list(story.get("duplicates") or [])
+            if not dup_lids:
+                prev = last_by_link.get(story.get("link"))
+                if prev:
+                    dup_lids = [x for x in (prev.get("duplicates") or [])
+                                if x in pool]
+            m["duplicates"] = dup_lids
+            m["is_duplicate"] = False
+            for r in dup_lids:
+                referenced.add(r)
+            merged[lid] = m
+        # Only tag as duplicate those that a retained head actually points to.
+        for lid, m in merged.items():
+            if lid in referenced:
+                m["is_duplicate"] = True
+        return merged
+
+    def _publish_preview(self, message: str = ""):
+        """Expose an up-to-date partial render while the full analysis runs.
+
+        Called after every fully processed feed so the page shows whatever has
+        already been read & grouped, and reports the current progress.
+        """
+        preview_pool = self._preview_merged_stories()
+        by_source, by_topic = self._group_render_data(preview_pool)
+        self.render_data = {
+            "by_source": by_source,
+            "by_topic": by_topic,
+            "by_lid": preview_pool,
+            "source_descriptions": self._source_descriptions(),
+            "new_entries": len(self._stories_by_lid),
+            "n_highlighted": 0,
+            "n_ml_tagged": 0,
+            "n_filtered": 0,
+            "date": datetime.now(pytz.timezone('Europe/Berlin')).strftime("%d.%m.%Y %H:%M"),
+            "hours_back": self._current_hours_back(),
+            "uid": self._uid,
+            "render_status": self.render_status,
+        }
+        pct = int(self.render_status.get("done_feeds", 0) / max(1, self.render_status.get("total_feeds", 1)) * 100)
+        self.render_status.update({
+            "status": "running",
+            "phase": "feeds",
+            "percent": min(pct, 100),
+            "message": message,
+            "uid": self._uid,
+        })
+
+    def _finish_status(self):
+        """Mark the render as finished."""
+        self.render_status.update({
+            "status": "done",
+            "percent": 100,
+            "phase": "done",
+            "message": "Fertig",
+            "done_feeds": self.render_status.get("total_feeds", 0),
+            "uid": self._uid,
+        })
 
     def _current_setting(self, name, fallback):
         """Read a per-user setting live from the settings store."""
@@ -241,18 +486,42 @@ class NewsFeedUser:
         feeds_by_url = self._current_feeds_by_url()
         user_feed_pool = feeds_by_url.keys()
 
+        # Report progress for the frontend banner (cold start / reload guard)
+        self.render_status.update({
+            "status": "running",
+            "phase": "fetch",
+            "percent": 5,
+            "done_feeds": 0,
+            "total_feeds": len(feeds_by_url),
+            "current_source": "",
+            "current_topic": "",
+            "message": "Feeds werden abgerufen…",
+            "uid": self._uid,
+        })
+
         # Fetch and process feeds asynchronously
         output = process_feeds(user_feed_pool, uid=self._uid )
         successful_feeds_by_url = output['successful_by_url']
 
         # Process each feed's entries
+        processed = 0
         for feed in feeds_by_url.values():
-            if feed['url'] not in successful_feeds_by_url:
-                continue
-            feed_raw_content = successful_feeds_by_url[feed['url']].raw_content
             feed_source = feed['source']
             feed_topic = feed.get('topic', 'Thema unbekannt')
+            processed += 1
+            self.render_status.update({
+                "phase": "feeds",
+                "done_feeds": processed,
+                "current_source": feed_source,
+                "current_topic": feed_topic,
+                "message": f"{feed_source} – {feed_topic}",
+            })
+            if feed['url'] not in successful_feeds_by_url:
+                # No content for this feed, but still expose progress
+                self._publish_preview()
+                continue
             feed_info = f"{feed_source} - {feed_topic}"
+            feed_raw_content = successful_feeds_by_url[feed['url']].raw_content
             rss = feedparser.parse(feed_raw_content)
             feed_bozo_status = f" Bozo {repr(rss.bozo)} ({rss.bozo_exception})," if rss.bozo else ""
 
@@ -280,8 +549,6 @@ class NewsFeedUser:
                 continue
             else:
                 logger.debug(f"processing feed [{feed_info:39}]{feed_bozo_status} with {len(rss.entries)} entries and {len(entries)} new entries")
-
-            # Collect stories, avoiding duplicates by link ID and title
             known_titles = []
             for entry in entries:
                 entry_link_id = tools.compute_hex_checksum(entry.link)
@@ -295,7 +562,8 @@ class NewsFeedUser:
                         "title": entry.title if entry.title else "[Ohne Titel]",
                         "link": entry.link,
                         "description": entry.description,
-                        "pub_date": entry.pub_date.strftime("%d.%m.%Y %H:%M:%S"), 
+                        "pub_date": entry.pub_date.strftime("%d.%m.%Y %H:%M:%S"),
+                        "pub_ts": entry.pub_date.timestamp(),  # UTC epoch, exakte Freshness für Eilmeldungen
                         "hours_ago": entry.hours_ago,
                         "lid": entry_link_id,
                         "highlight": True if hasattr(entry, 'highlight') and entry.highlight else False,
@@ -303,6 +571,8 @@ class NewsFeedUser:
                         "duplicates": [],
                     }
 
+            # Expose an up-to-date partial render after each processed feed
+            self._publish_preview()
 
         # Duplikaterkennung initialisieren
         detector = StoryDuplicateDetector(
@@ -334,40 +604,22 @@ class NewsFeedUser:
                 n_total_highlighted += 1
                 story['title'] = f"⭐ {story['title']}"
 
-        # Tag stories similar to previously clicked ("liked") entries using the ML model
+        # Tag stories similar to previously clicked ("liked") entries using ML
         n_total_ml_tagged = 0
         if config.ML_TAG_ENABLED:
             ml_tagger = MLTagger(uid=self._uid, semantic_model=detector.semantic_model)
             n_total_ml_tagged = ml_tagger.tag_stories(self._stories_by_lid)
+            # ML tagging can take a while; expose a fresh preview (deduped)
+            self._publish_preview()
 
         # Group stories by source and topic (excluding duplicates from grouping)
-        by_source = {}
-        by_topic = {}
-        for story in self._stories_by_lid.values():
-            # Skip stories that are marked as duplicates
-            if story.get('is_duplicate', False):
-                continue
-                
-            if story['source'] not in by_source:
-                by_source[story['source']] = []
-            by_source[story['source']].append(story)
-
-            if story['topic'] not in by_topic:
-                by_topic[story['topic']] = []
-            by_topic[story['topic']].append(story)
-
-        # sort by_source by topic, number of duplicates (descending), and hours_ago
-        for source in by_source:
-            by_source[source].sort(key=lambda item: (item['topic'], -len(item.get('duplicates', [])), item['hours_ago']))
-        
-        # sort by_topic by number of duplicates (descending) and hours_ago
-        for topic in by_topic:
-            by_topic[topic].sort(key=lambda item: (-len(item.get('duplicates', [])), item['hours_ago']))
+        by_source, by_topic = self._group_render_data(self._stories_by_lid)
 
         self.render_data = {
             "by_source": by_source,
             "by_topic": by_topic,
             "by_lid": self._stories_by_lid,
+            "source_descriptions": self._source_descriptions(),
             "new_entries": n_new_entries,
             "n_highlighted": n_total_highlighted,
             "n_ml_tagged": n_total_ml_tagged,
@@ -375,7 +627,16 @@ class NewsFeedUser:
             "date": datetime.now(pytz.timezone('Europe/Berlin')).strftime("%d.%m.%Y %H:%M"),
             "hours_back": self._current_hours_back(),
             "uid": self._uid,
+            "render_status": self.render_status,
         }
+        # Remember this fully rendered (deduplicated + ML-tagged) pool so the
+        # next render cycle can keep showing these duplicate sets during its
+        # incremental previews, instead of briefly exposing empty lists.
+        self._last_complete_by_lid = {
+            lid: dict(story) for lid, story in self._stories_by_lid.items()
+        }
+        type(self)._last_complete_by_uid[self._uid] = self._last_complete_by_lid
+        self._finish_status()
 
         # Retrain the ML model if the clicktrack file has grown large enough (checked hourly)
         if config.ML_TAG_ENABLED:

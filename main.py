@@ -9,7 +9,7 @@ import uvicorn
 from copy import deepcopy
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -71,6 +71,18 @@ async def update_render_data():
         logger.info("Periodic update completed successfully")
     except Exception:
         logger.exception("Error during periodic update")
+
+
+def _background_initial_render():
+    """Run the initial render for all web users without blocking FastAPI startup.
+
+    Launched as a background asyncio task so the HTTP server becomes available
+    immediately; the frontend polls /render_status to show a progress banner
+    while feeds are analysed, and each NewsFeedUser publishes partial results
+    as it goes.
+    """
+    loop = asyncio.get_event_loop()
+    loop.create_task(update_render_data())
 
 
 async def send_app_via_email():
@@ -137,9 +149,10 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("Scheduler started")
     
-    # Run initial update
-    logger.info("Running initial update")
-    await update_render_data()
+    # Run initial update in the background so the server stays responsive;
+    # the frontend shows a progress banner while feeds are analysed.
+    logger.info("Running initial update (background)")
+    _background_initial_render()
     
     yield
     
@@ -164,7 +177,6 @@ async def favicon():
 @app.get("/{uid}", response_class=HTMLResponse)
 async def root(request: Request, uid: str, limit: int = 10, hours_back: int = 24):
     if uid in nfm.news_feed_users_by_uid:
-        #nfm_by_uid[uid].save_render_data_as_json(Path(f"render_data_{uid}.json"))
         nfu = nfm.news_feed_users_by_uid[uid]
         data = nfu.render_data
         uninteresting_lids = nfu.get_uninteresting_lids()
@@ -182,7 +194,20 @@ async def root(request: Request, uid: str, limit: int = 10, hours_back: int = 24
         )
     else:
         logger.warning(f"index: uid {uid} not found")
-        return "", 404  # Return empty response with 404 Not Found status
+        # Explicit Response instead of a (content, status) tuple: FastAPI does
+        # not unpack tuples into (content, status_code) on this route, it would
+        # serialize the tuple as a JSON list and crash HTMLResponse.encode().
+        return Response(content="", status_code=404)
+
+
+@app.get("/{uid}/render_status")
+async def render_status(uid: str):
+    """Return the current render progress for the frontend banner."""
+    nfu = nfm.get_news_feed_user(uid)
+    if not nfu:
+        logger.warning(f"render_status: uid {uid} not found")
+        return JSONResponse({"error": "User not found"}, status_code=404)
+    return JSONResponse(nfu.render_status)
 
 
 @app.get("/send_email/{uid}")
@@ -193,14 +218,14 @@ async def send_email(request: Request, uid: str):
         # Skip if user does not consume via email
         if "email" not in nfu.consumption_modes:
             logger.debug(f"[{uid}] skipping email send; 'email' not in consumption_modes")
-            return {"error": "User does not have email consumption mode enabled"}, 400
+            return JSONResponse({"error": "User does not have email consumption mode enabled"}, status_code=400)
         
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, nfu.send_app_via_email)
         return {"message": "Email sent successfully"}
     else:
         logger.warning(f"send_email: uid {uid} not found")
-        return {"error": "User not found"}, 404
+        return JSONResponse({"error": "User not found"}, status_code=404)
 
 
 @app.get("/{uid}/clicktrack")
@@ -215,7 +240,7 @@ async def clicktrack(uid: str, request: Request):
             logger.warning(f"[{uid}] clicktrack: lid {lid} not found")
     else:
         logger.warning(f"[{uid}] clicktrack: uid {uid} not found")
-    return "", 200  # Return empty response with 200 OK status
+    return Response(content="", status_code=200)  # Empty 200 OK response
 
 
 @app.post("/{uid}/save_negative_samples")
@@ -230,16 +255,16 @@ async def save_negative_samples(uid: str, request: Request):
         nfu = nfm.get_news_feed_user(uid)
         if not nfu:
             logger.warning(f"[{uid}] save_negative_samples: uid not found")
-            return {"error": "User not found"}, 404
+            return JSONResponse({"error": "User not found"}, status_code=404)
         
         count = nfu.save_negative_samples(lids, section_name, section_type)
         logger.info(f"[{uid}] save_negative_samples: {count} negative samples saved for {section_type} '{section_name}'")
         
-        return {"message": f"{count} negative samples saved", "count": count}, 200
+        return JSONResponse({"message": f"{count} negative samples saved", "count": count}, status_code=200)
         
     except Exception as e:
         logger.exception(f"[{uid}] save_negative_samples: error processing request")
-        return {"error": str(e)}, 500
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +355,10 @@ def _validate_feed(feed, idx, errs):
         errs.append(f"feeds[{idx}].check_paywall: must be a boolean")
     if "desc_filter" in feed and not isinstance(feed["desc_filter"], str):
         errs.append(f"feeds[{idx}].desc_filter: must be a string")
+    if "description" in feed and not isinstance(feed["description"], str):
+        errs.append(f"feeds[{idx}].description: must be a string")
     for key in feed:
-        if key not in ("source", "url", "topic", "check_paywall", "desc_filter"):
+        if key not in ("source", "url", "topic", "check_paywall", "desc_filter", "description"):
             errs.append(f"feeds[{idx}].{key}: unknown feed key")
 
 
@@ -390,8 +417,8 @@ async def get_settings(uid: str):
     payload = _settings_payload(uid)
     if payload is None:
         logger.warning(f"get_settings: uid {uid} not found")
-        return {"error": "User not found"}, 404
-    return payload
+        return JSONResponse({"error": "User not found"}, status_code=404)
+    return JSONResponse(payload)
 
 
 @app.put("/{uid}/settings")
@@ -412,13 +439,13 @@ async def put_settings(uid: str, request: Request):
     """
     if uid not in nfm.news_feed_users_by_uid:
         logger.warning(f"put_settings: uid {uid} not found")
-        return {"error": "User not found"}, 404
+        return JSONResponse({"error": "User not found"}, status_code=404)
 
     body, err = await _request_json(request)
     if err:
-        return {"error": err}, 422
+        return JSONResponse({"error": err}, status_code=422)
     if not isinstance(body, dict):
-        return {"error": "Body must be a JSON object"}, 422
+        return JSONResponse({"error": "Body must be a JSON object"}, status_code=422)
 
     errs = []
     settings = body.get("settings")
@@ -437,16 +464,16 @@ async def put_settings(uid: str, request: Request):
         _validate_global_block(global_, errs)
 
     if errs:
-        return {"error": "Validation failed", "details": errs}, 422
+        return JSONResponse({"error": "Validation failed", "details": errs}, status_code=422)
 
     if not settings_store.update_user(
         uid, settings=settings, feeds=feeds, global_=global_
     ):
         logger.warning(f"put_settings: store rejected uid {uid}")
-        return {"error": "User not found"}, 404
+        return JSONResponse({"error": "User not found"}, status_code=404)
 
     logger.info(f"[{uid}] settings updated via API")
-    return {"message": "Settings saved", "uid": uid}
+    return JSONResponse({"message": "Settings saved", "uid": uid})
 
 
 @app.post("/{uid}/refresh")
@@ -459,11 +486,11 @@ async def refresh_uid(uid: str):
     nfu = nfm.get_news_feed_user(uid)
     if not nfu:
         logger.warning(f"refresh: uid {uid} not found")
-        return {"error": "User not found"}, 404
+        return JSONResponse({"error": "User not found"}, status_code=404)
     logger.info(f"[{uid}] manual refresh triggered")
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, nfu.update_render_data)
-    return {"message": "Render data refreshed", "uid": uid}
+    return JSONResponse({"message": "Render data refreshed", "uid": uid})
 
 
 @app.post("/{uid}/reload")
@@ -483,7 +510,7 @@ async def reload_uid(uid: str):
         reloaded = importlib.reload(config)
     except Exception:
         logger.exception("[{}] reload: failed to re-import config.py".format(uid))
-        return {"error": "Failed to reload config.py"}, 500
+        return JSONResponse({"error": "Failed to reload config.py"}, status_code=500)
 
     try:
         # 1. Rebuild the store from the fresh config defaults. load() overlays
@@ -521,7 +548,7 @@ async def reload_uid(uid: str):
         return {"message": "Config reloaded", "uid": uid}
     except Exception:
         logger.exception("[{}] reload rebuild failed".format(uid))
-        return {"error": "Reload rebuild failed"}, 500
+        return JSONResponse({"error": "Reload rebuild failed"}, status_code=500)
 
 
 if __name__ == "__main__":
