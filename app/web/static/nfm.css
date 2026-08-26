@@ -116,6 +116,43 @@ hr {
   color: var(--text-navbar-hover);
 }
 
+/* Live-search bar in the navbar */
+.search-wrap {
+  flex: 1;
+  min-width: 120px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+}
+
+.search-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 80px;
+  padding: 6px 10px;
+  background: var(--bg-body);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  font-size: 0.9em;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.search-count {
+  color: var(--text-navbar);
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+
+.search-count[hidden] {
+  display: none;
+}
+
 .main {
   margin-top: 30px;
   width: 100%;

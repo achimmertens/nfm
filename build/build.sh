@@ -13,10 +13,12 @@ cd "$REPO_ROOT"
 
 # Build on disk, not on the small tmpfs (/tmp is only ~4G on the Pi and podman
 # stores build blobs there -> "no space left on device" + lost layer cache on
-# large rebuilds). Use $TMPDIR if the caller set one, otherwise fall back to a
-# dedicated dir on the root filesystem. Overridable via env.
-: "${TMPDIR:=${REPO_ROOT}/../podman-tmp}"
-TMPDIR_BUILD="${TMPDIR}"
+# large rebuilds). Always use a dedicated dir on the root filesystem. An
+# ambient TMPDIR=/tmp (often preset by the login shell/systemd) must NOT win,
+# so we ignore it and only honor an explicit NFM_BUILD_TMPDIR override. This
+# keeps the Pi build stable even when the user shell already exported TMPDIR.
+: "${NFM_BUILD_TMPDIR:=${REPO_ROOT}/../podman-tmp}"
+TMPDIR_BUILD="${NFM_BUILD_TMPDIR}"
 mkdir -p "${TMPDIR_BUILD}"
 export TMPDIR="${TMPDIR_BUILD}"
 echo ">>> Build TMPDIR: ${TMPDIR_BUILD}"

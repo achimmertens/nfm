@@ -11,6 +11,9 @@ let sectionVisibilityState = parseInt(localStorage.getItem(SECTION_VISIBILITY_KE
 // Currently active filter value (null = no filter)
 let currentFilterValue = null;
 
+// Currently active live-search term ('' = no search active)
+let currentSearchTerm = '';
+
 // ========== Theme Management ==========
 function initTheme() {
   const savedTheme = localStorage.getItem(THEME_KEY);
@@ -355,24 +358,55 @@ function toggleUninterestingVisibility() {
 }
 
 
-// ========== Filtering ==========
-function filterNewsItems(value) {
-  currentFilterValue = value === '<none>' ? null : value;
+// ========== Live Search ==========
+// Search bar in the navbar. Filters purely client-side against the DOM: an
+// article (`.news-item`) stays visible only when the term (case-insensitive
+// substring) appears in its title OR description. Empty term shows everything.
+// Uses only safe String methods (trim, toLowerCase, indexOf) - no HTML parsing,
+// so special characters like < > & + in the query are treated as plain text.
+function handleSearchInput() {
+  const input = document.getElementById('search-input');
+  currentSearchTerm = input ? input.value.trim().toLowerCase() : '';
+  // Re-apply whatever time/star filter is active on top of the new search term.
+  applyActiveFilters();
+  updateSearchCount();
+}
 
-  const newsItems = document.querySelectorAll('.news-item');
-  const detailsList = document.querySelectorAll('details');
+function updateSearchCount() {
+  const countEl = document.getElementById('search-count');
+  if (!countEl) return;
 
-  if (value === '<none>') {
-    resetFilters(newsItems, detailsList);
-    applyUninterestingVisibility(localStorage.getItem(HIDE_UNINTERESTING_KEY) !== 'false');
+  if (!currentSearchTerm) {
+    countEl.hidden = true;
+    countEl.textContent = '';
     return;
   }
 
+  // Count matches in the Sources section only (like updateHeaderStats) to avoid
+  // double-counting entries that appear in both the Quellen and Themen sections.
+  const sourcesSection = document.getElementById('sources-section');
+  if (!sourcesSection) return;
+  let visibleCount = 0;
+  sourcesSection.querySelectorAll('.news-item').forEach(item => {
+    if (getComputedStyle(item).display !== 'none') visibleCount++;
+  });
+
+  countEl.hidden = false;
+  countEl.textContent = visibleCount === 1 ? '1 Artikel gefunden' : `${visibleCount} Artikel gefunden`;
+}
+
+// ========== Filtering ==========
+// Single choke point for (re-)applying the currently active time/star filter
+// AND the live search term to every news item. Used both when a navbar filter
+// is clicked and when the search box changes, so the two never fight.
+function applyActiveFilters() {
+  const newsItems = document.querySelectorAll('.news-item');
+  const detailsList = document.querySelectorAll('details');
   const hideUninteresting = localStorage.getItem(HIDE_UNINTERESTING_KEY) !== 'false';
 
-  // Apply filter to ALL news items, combining time/star filter with uninteresting state
+  // Apply filter to ALL news items, combining time/star/search filter with uninteresting state
   newsItems.forEach(item => {
-    const hiddenByFilter = shouldHideItem(item, value);
+    const hiddenByFilter = shouldHideItem(item, currentFilterValue);
     const hiddenByUninteresting = hideUninteresting
       && item.classList.contains('uninteresting')
       && !item.classList.contains('visited');  // visited entries are never hidden by the toggle
@@ -382,6 +416,25 @@ function filterNewsItems(value) {
   updateEntryCounts(detailsList);
   updateHeaderStats();
   updateUninterestingStats();
+}
+
+function filterNewsItems(value) {
+  currentFilterValue = value === '<none>' ? null : value;
+
+  if (value === '<none>') {
+    const newsItems = document.querySelectorAll('.news-item');
+    const detailsList = document.querySelectorAll('details');
+    resetFilters(newsItems, detailsList);
+    if (currentSearchTerm) {
+      // Keep a live search active on top of the reset
+      applyActiveFilters();
+    } else {
+      applyUninterestingVisibility(localStorage.getItem(HIDE_UNINTERESTING_KEY) !== 'false');
+    }
+    return;
+  }
+
+  applyActiveFilters();
 }
 
 function resetFilters(newsItems, detailsList) {
@@ -395,6 +448,16 @@ function shouldHideItem(item, filterValue) {
   const title = item.querySelector('.news-title')?.textContent || '';
   const description = item.querySelector('.news-description')?.textContent || '';
   const hoursAgo = extractHoursAgo(item);
+
+  // Live search overlay: if a search term is active, the item must match it
+  // (case-insensitive substring over title OR description), independent of
+  // whatever time/star filter is currently active.
+  if (currentSearchTerm) {
+    const searchHaystack = (title + ' ' + description).toLowerCase();
+    if (searchHaystack.indexOf(currentSearchTerm) === -1) {
+      return true;
+    }
+  }
 
   if (typeof filterValue === 'number' || !isNaN(parseInt(filterValue))) {
     return hoursAgo > parseInt(filterValue);

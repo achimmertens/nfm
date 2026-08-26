@@ -57,6 +57,13 @@
 
   <!-- ========== Navigation ========== -->
   <div class="navbar">
+    <div class="search-wrap">
+      <input type="search" id="search-input" class="search-input"
+             placeholder="Suchen…" aria-label="Artikel durchsuchen"
+             autocomplete="off" spellcheck="false"
+             oninput="handleSearchInput();">
+      <span id="search-count" class="search-count" hidden></span>
+    </div>
     <a href="#" onclick="event.preventDefault(); filterNewsItems(6);">6h</a>
     <a href="#" onclick="event.preventDefault(); filterNewsItems(12);">12h</a>
     <a href="#" onclick="event.preventDefault(); filterNewsItems(24);">24h</a>
