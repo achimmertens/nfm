@@ -53,6 +53,7 @@ class NewsFeedUser:
             # 'by_source' for the first seconds after a restart.
             "by_source": {},
             "by_topic": {},
+            "by_breaking": {},
             "by_lid": {},
             "source_descriptions": {},
             "new_entries": 0,
@@ -200,27 +201,37 @@ class NewsFeedUser:
         return False
 
     def _group_render_data(self, stories_by_lid: Dict):
-        """Build the by_source / by_topic grouping from a story pool.
+        """Build the by_source / by_topic / by_breaking grouping from a story pool.
 
         Duplicate stories are excluded from the grouping. Breaking-news
         ("Eilmeldungen") articles are grouped BOTH under their real topic AND
-        under an additional ``by_topic["Eilmeldungen"]`` bucket. The real
-        ``topic`` field of every story stays untouched (extra grouping only).
+        under an additional ``by_topic["Eilmeldungen"]`` bucket (backward
+        compatible), AND collected in a dedicated standalone ``by_breaking``
+        bucket so the frontend can render a separate "Eilmeldungen" section.
+        The real ``topic`` field of every story stays untouched (extra grouping
+        only).
         """
         by_source = {}
         by_topic = {}
+        by_breaking = {}
         for story in stories_by_lid.values():
             if story.get("is_duplicate", False):
                 continue
             by_source.setdefault(story["source"], []).append(story)
             by_topic.setdefault(story["topic"], []).append(story)
-            # Breaking-news bucket (in addition, never in place of the topic).
-            # Guard: if the story's real topic already IS "Eilmeldungen" (e.g.
-            # Spiegel-Eilmeldungen-Feed), it is already in that bucket via the
-            # normal assignment – adding it again would double it.
-            if (self._is_breaking_news(story, story["topic"])
-                    and story["topic"] != self._BREAKING_TOPIC):
-                by_topic.setdefault(self._BREAKING_TOPIC, []).append(story)
+            # Breaking-news detection (used both for the legacy
+            # by_topic["Eilmeldungen"] bucket AND the dedicated by_breaking
+            # section below).
+            if self._is_breaking_news(story, story["topic"]):
+                # Dedicated standalone breaking-news bucket.
+                by_breaking.setdefault(self._BREAKING_TOPIC, []).append(story)
+                # Legacy by_topic["Eilmeldungen"] bucket (in addition, never in
+                # place of the topic). Guard: if the story's real topic already
+                # IS "Eilmeldungen" (e.g. Spiegel-Eilmeldungen-Feed), it is
+                # already in that bucket via the normal assignment – adding it
+                # again would double it.
+                if story["topic"] != self._BREAKING_TOPIC:
+                    by_topic.setdefault(self._BREAKING_TOPIC, []).append(story)
         for source in by_source:
             by_source[source].sort(key=lambda item: (
                 item["topic"], -len(item.get("duplicates", [])), item["hours_ago"]))
@@ -232,7 +243,11 @@ class NewsFeedUser:
             by_topic = {self._BREAKING_TOPIC: by_topic[self._BREAKING_TOPIC],
                         **{k: v for k, v in by_topic.items()
                            if k != self._BREAKING_TOPIC}}
-        return by_source, by_topic
+        # Sort the dedicated breaking-news bucket too.
+        if self._BREAKING_TOPIC in by_breaking:
+            by_breaking[self._BREAKING_TOPIC].sort(key=lambda item: (
+                -len(item.get("duplicates", [])), item["hours_ago"]))
+        return by_source, by_topic, by_breaking
 
     def _preview_merged_stories(self):
         """Build the by_lid story pool shown during a running render.
@@ -290,10 +305,11 @@ class NewsFeedUser:
         already been read & grouped, and reports the current progress.
         """
         preview_pool = self._preview_merged_stories()
-        by_source, by_topic = self._group_render_data(preview_pool)
+        by_source, by_topic, by_breaking = self._group_render_data(preview_pool)
         self.render_data = {
             "by_source": by_source,
             "by_topic": by_topic,
+            "by_breaking": by_breaking,
             "by_lid": preview_pool,
             "source_descriptions": self._source_descriptions(),
             "new_entries": len(self._stories_by_lid),
@@ -368,7 +384,7 @@ class NewsFeedUser:
         else:
             return None
 
-    def clicktrack(self, lid: str, rating: int) -> bool:
+    def clicktrack(self, lid: str, rating: int, stars: int = 3) -> bool:
         """Records the link click tracking information for a given link ID.
 
         This method tracks user interactions with links by saving link information to a JSONL file.
@@ -376,7 +392,10 @@ class NewsFeedUser:
 
         Args:
             lid (str): The link ID to track.
-            rating (int): Rating for the article.
+            rating (int): Rating for the article (0 = uninteressant, 1 = gesehen/positiv).
+            stars (int, optional): Star rating 0-5 assigned by the user (default 3). A click
+                (rating==1) automatically grants 3 stars, matching the "angesehen" default. The
+                star value is used as the ML signal weight (more stars = stronger positive).
 
         Returns:
             bool: True if tracking was successful, False if the link ID information could not be found.
@@ -385,6 +404,7 @@ class NewsFeedUser:
         if lid_info is None:
             return False
         lid_info["rating"] = rating
+        lid_info["stars"] = max(0, min(int(stars), 5))
         uid = self._uid
         clicktrack_file_fq = Path(__file__).parent.parent.parent / "clicktrack" / f"clicktrack_{uid}.jsonl"
         with open(clicktrack_file_fq, "a", encoding="utf-8") as f:
@@ -613,11 +633,12 @@ class NewsFeedUser:
             self._publish_preview()
 
         # Group stories by source and topic (excluding duplicates from grouping)
-        by_source, by_topic = self._group_render_data(self._stories_by_lid)
+        by_source, by_topic, by_breaking = self._group_render_data(self._stories_by_lid)
 
         self.render_data = {
             "by_source": by_source,
             "by_topic": by_topic,
+            "by_breaking": by_breaking,
             "by_lid": self._stories_by_lid,
             "source_descriptions": self._source_descriptions(),
             "new_entries": n_new_entries,

@@ -75,6 +75,7 @@
     {% if enable_hide_unread %}
       <a href="#" onclick="event.preventDefault(); resetVisitedLinks();" title="Ungelesene zurücksetzen">🧹</a>
     {% endif %}
+    <a href="#" onclick="event.preventDefault(); toggleAnleitung();" title="Anleitung anzeigen">📖 Anleitung</a>
     {% if show_settings_ui %}
       <a href="#" onclick="event.preventDefault(); openSettings();" title="Einstellungen">⚙️</a>
     {% endif %}
@@ -127,6 +128,13 @@
       {% if not entry.is_duplicate %}
         <div class="news-item{% if entry.lid in uninteresting_lids %} uninteresting{% endif %}{% if entry.is_ml_tagged %} ml-tagged{% endif %}">
           <a href="{{entry.link}}" onclick="trackClickFollow(event, this, '{{entry.lid}}', 1)" class="news-title">{% if entry.is_ml_tagged %}💡 {% endif %}{{entry.title}}</a>
+          <span class="star-rating" data-lid="{{entry.lid}}" title="Artikel mit Sternen bewerten">
+            <span class="star" data-val="1" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+            <span class="star" data-val="2" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+            <span class="star" data-val="3" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+            <span class="star" data-val="4" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+            <span class="star" data-val="5" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+          </span>
           <br>
           <span class="label source">{{entry.source}}</span>
           <span class="label topic">{{entry.topic}}</span>
@@ -144,6 +152,13 @@
       {% if not entry.is_duplicate %}
         <div class="news-item{% if entry.lid in uninteresting_lids %} uninteresting{% endif %}{% if entry.is_ml_tagged %} ml-tagged{% endif %}">
           <a href="{{entry.link}}" onclick="trackClickFollow(event, this, '{{entry.lid}}', 1)" class="news-title">{% if entry.is_ml_tagged %}💡 {% endif %}{{entry.title}}</a>
+          <span class="star-rating" data-lid="{{entry.lid}}" title="Artikel mit Sternen bewerten">
+            <span class="star" data-val="1" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+            <span class="star" data-val="2" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+            <span class="star" data-val="3" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+            <span class="star" data-val="4" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+            <span class="star" data-val="5" onclick="rateStar(event, this, '{{entry.lid}}')">☆</span>
+          </span>
           <br>
           <span class="label topic">{{entry.topic}}</span>
           <span class="label hours">{{entry.hours_ago}}h</span>
@@ -157,8 +172,34 @@
       {% endif %}
     {% endmacro %}
 
+    <!-- ========== Breaking News (Eilmeldungen) Section ========== -->
+    <div class="separator" id="eilmeldungen-separator">🚨 Eilmeldungen</div>
+
+    <div id="eilmeldungen-section">
+    {% for breaking_topic, entries in (data.get("by_breaking") or {}).items() %}
+    {% set non_duplicate_entries = entries|rejectattr('is_duplicate')|list %}
+    {% if non_duplicate_entries|length > 0 %}
+    <details data-storage-key="{{ breaking_topic }}">
+      <summary>🚨 {{breaking_topic}} <span class="entry-length">[{{ non_duplicate_entries|length }}]</span></summary>
+      <hr>
+      {% for entry in entries %}
+        {{ render_topic_news_item(entry, data) }}
+      {% endfor %}
+      {% if enable_hide_unread %}
+      <div style="text-align: center; margin: 20px 0;">
+        <button class="button mark-as-read-btn" type="button"
+                onclick="hideUninterestingItems(event, '{{ breaking_topic }}', 'topic', this)">
+          🗑️ Ungelesene ausblenden
+        </button>
+      </div>
+      {% endif %}
+    </details>
+    {% endif %}
+    {% endfor %}
+    </div>
+
     <!-- ========== Sources Section ========== -->
-    <div class="separator">Quellen</div>
+    <div class="separator" id="sources-separator">Quellen</div>
 
     <div id="sources-section">
     {% for feed_source, entries in data["by_source"].items() %}
@@ -189,7 +230,7 @@
     </div>
 
     <!-- ========== Topics Section ========== -->
-    <div class="separator">Themen</div>
+    <div class="separator" id="topics-separator">Themen</div>
 
     <div id="topics-section">
     {% for feed_topic, entries in data["by_topic"].items() %}
@@ -216,6 +257,60 @@
 
     <div class="version-info">v{{ app_version }}</div>
 
+  </div>
+
+  <!-- ========== Anleitung Overlay ========== -->
+  <div id="anleitung-overlay" class="settings-overlay" hidden>
+    <div class="settings-panel">
+      <div class="settings-header">
+        <span>📖 Anleitung — NFM News Feed Manager</span>
+        <button type="button" class="settings-close" onclick="closeAnleitung();" title="Schließen">×</button>
+      </div>
+      <div id="anleitung-content" class="settings-anleitung-content">
+        <h3>Was macht diese App?</h3>
+        <p>NFM (News Feed Manager) ist ein selbst gehosteter RSS-Newsreader: Er lädt deine Feeds asynchron, entfernt Duplikate, filtert nach deinen Einstellungen und stellt die Artikel übersichtlich dar. Es gibt keine Datenbank — der ganze Zustand liegt in JSON/JSONL-Dateien.</p>
+
+        <h3>Die drei Ansichten (💫-Knopf)</h3>
+        <p>Der Knopf <strong>💫</strong> schaltet zwischen vier Ansichten um: <strong>Alle</strong> → <strong>Quellen</strong> → <strong>Themen</strong> → <strong>Eilmeldungen</strong> → wieder Alle. Bei „Alle“ werden Quellen, Themen und Eilmeldungen untereinander angezeigt.</p>
+
+        <h3>Artikel-Ansicht &amp; Filter</h3>
+        <ul>
+          <li><strong>Suche</strong>: Filtert live nach Titel oder Beschreibung.</li>
+          <li><strong>6h / 12h / 24h</strong> – Zeitfenster: nur Artikel, die nicht älter als 6/12/24 Stunden sind.</li>
+          <li><strong>⭐</strong> – nur hervorgehobene Artikel (Titel enthält ein hervorgehobenes Schlagwort aus den Einstellungen).</li>
+          <li><strong>💡</strong> – nur ML-getaggte / „ähnliche“ Einträge (KI-Modell bewertet Ähnlichkeit zu deinen Interessen).</li>
+          <li><strong>🚫</strong> – blendet als „uninteressant“ markierte Artikel wieder ein/aus.</li>
+          <li><strong>🧹</strong> – setzt alle „gelesen“-Markierungen zurück.</li>
+          <li><strong>🌙</strong> – Tag-/Nachtsicht umschalten.</li>
+        </ul>
+
+        <h3>Warum wird ein Artikel angezeigt (nicht angezeigt)?</h3>
+        <p>Ein Artikel erscheint, wenn er im gewählten Zeitfenster liegt, nicht auf einer Blacklist steht, nicht hinter einer erkannten Paywall ist und kein Duplikat eines anderen Artikels ist. Duplikate mehrerer Quellen zur selben Meldung werden gebündelt; die „Haupt“-Quelle (nach deiner Quellenreihenfolge) bleibt sichtbar, die übrigen werden als eingeklappte Duplikate darunter angezeigt.</p>
+
+        <h3>„Als gelesen markieren“ / „Ungelesene ausblenden“</h3>
+        <ul>
+          <li><strong>Gelesen</strong>: Ein Klick auf einen Artikel markiert ihn (in deinem Browser) als besucht; er wird ausgegraut.</li>
+          <li><strong>🗑️ Ungelesene ausblenden</strong> (je Abschnitt): Erfasst alle noch ungelesenen Artikel des Abschnitts, blendet sie aus und speichert sie als „uninteressant“ — das KI-Modell lernt daraus.</li>
+        </ul>
+
+        <h3>Einstellungen (⚙️)</h3>
+        <p>Unter <strong>⚙️</strong> steuerst du Empfang (Web-Ansicht / E-Mail-Digest), hervorgehobene Schlagwörter, Blacklists, E-Mail-Empfänger, Quellenreihenfolge, Feeds und globale Werte (z.&nbsp;B. Zeitfenster, Limiten, ML-Schwellen). Änderungen werden gespeichert und die News anschließend sofort neu geladen.</p>
+
+        <h3>Update / Refresh</h3>
+        <p>Artikel werden stündlich automatisch aktualisiert. Beim <strong>⟳ Neu laden</strong> (in den Einstellungen) wird die Konfiguration neu eingelesen und alles neu geladen.</p>
+
+        <h3>Maschinelles Lernen &amp; dein Profil</h3>
+        <p><strong>Konzept:</strong> NFM baut für dich ein kleines, persönliches KI-Modell, das aus deinem eigenen Klickverhalten lernt, was für dich interessant ist. Die Basis ist ein MiniLM-Sprachmodell, das Artikeltexte in Vektoren (sog. <em>semantic embeddings</em>) umwandelt — so kann die Ähnlichkeit verschiedener Artikel rechnerisch verglichen werden.</p>
+        <p><strong>Trainingsdaten:</strong> Artikel, die du anklickst, dienen als <strong>Positiv-Beispiele</strong>; als „uninteressant“ markierte Artikel werden als <strong>Negativ-Beispiele</strong> berücksichtigt. Ein Klassifikator (Logistische Regression) lernt daraus die Grenze „ähnlich zu dem, was du magst“.</p>
+        <p><strong>Wirkung:</strong> Artikel, denen die KI eine hohe Wahrscheinlichkeit für dein Interesse gibt, bekommen eine 💡-Markierung sowie ein Prozent-Badge mit der geschätzten Wahrscheinlichkeit.</p>
+        <p><strong>Datenschutz:</strong> Das Modell bleibt pro Nutzer und lernt ausschließlich aus deinem eigenen Verhalten — es werden keine Daten zwischen Nutzern geteilt.</p>
+        <ul>
+          <li><strong>Hinweis zur Aktivierung:</strong> Ein Modell wird erst trainiert, wenn genügend Klicks + Markierungen gesammelt wurden (Schwellwert <em>ML_RETRAIN_THRESHOLD_BYTES</em>). Solange dieses Limit noch nicht erreicht ist, gibt es noch keine 💡-Vorhersagen — der 💡-Filter zeigt dann nichts.</li>
+          <li><strong>Was gilt als Interesse (Positiv)?</strong> Ein Klick auf einen Artikel markiert ihn als gelesen (ausgegraut) und zählt als Positiv-Beispiel (automatisch 3 Sterne).<br>
+          <strong>Stern-Bewertung:</strong> Neben jedem Artikel stehen 5 ausgegraute Sterne. Klicke auf einen Stern (z.&nbsp;B. den 3.), um den Artikel zu bewerten – gefüllt werden alle Sterne bis dahin. Je mehr Sterne du vergibst, desto stärker lernt die KI „so etwas mag ich“: Artikel, die hoch &nbsp;bewerteten Artikeln sämtlich ähnlich sind, bekommen eher die 💡-Markierung und erscheinen so im „Nur ähnliche Artikel“-Filter. Ein einfaches Anklicken setzt automatisch 3 Sterne.</li>
+          <li><strong>Wie markiere ich „uninteressant“ (Negativ)?</strong> Es gibt keinen Einzel-Artikel-Button für „uninteressant“. Stattdessen findet sich je Abschnitt/Sektion der Button <strong>🗑️ Ungelesene ausblenden</strong>: Er erfasst alle noch ungeklickten Artikel dieses Abschnitts, blendet sie aus und speichert sie für das KI-Modell als Negativ-Beispiel. Die Markierung erfolgt also abschnitts-/sektionsweise.</li>
+        </ul>
+    </div>
   </div>
 
   {% if show_settings_ui %}

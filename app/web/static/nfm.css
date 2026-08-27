@@ -179,6 +179,16 @@ hr {
   margin-bottom: 14px;
 }
 
+/* Breaking news (Eilmeldungen) separator — visually highlighted with a red
+   accent border so urgent items stand out from regular sources/topics. */
+#eilmeldungen-separator {
+  background-color: var(--accent-red);
+  color: #ffffff;
+  border: 2px solid var(--accent-blue);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
 /* ========== Details/Summary ========== */
 details {
   background-color: var(--bg-details);
@@ -658,4 +668,54 @@ summary::-webkit-details-marker {
 .btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* ========== Anleitung (📖) overlay ========== */
+#anleitung-content {
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+#anleitung-content h3 {
+  margin: 16px 0 6px;
+  color: var(--text-navbar);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 1.02em;
+}
+#anleitung-content h3:first-child {
+  margin-top: 0;
+}
+#anleitung-content p,
+#anleitung-content ul {
+  margin: 6px 0;
+  line-height: 1.55;
+}
+
+/* ========== Star Rating (Bewertung) ========== */
+.star-rating {
+  display: inline-flex;
+  gap: 1px;
+  margin-left: 8px;
+  vertical-align: middle;
+  font-size: 18px;
+  line-height: 1;
+  user-select: none;
+}
+.star-rating .star {
+  color: #999;              /* ausgegraut = leer */
+  cursor: pointer;
+  font-style: normal;
+  transition: color 0.1s ease, transform 0.1s ease;
+}
+.star-rating .star:hover {
+  transform: scale(1.2);
+}
+.star-rating .star.filled {
+  color: #f5b301;           /* voll: gold */
+}
+.star-rating .star.hovered {
+  color: #ffd75e;           /* Hover-Vorschau */
+}
+.news-item[data-theme="dark"] .star-rating .star,
+[data-theme="dark"] .star-rating .star {
+  color: #666;
 }

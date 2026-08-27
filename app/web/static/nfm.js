@@ -5,7 +5,7 @@ const SECTION_VISIBILITY_KEY = 'sectionVisibilityState';
 const THEME_KEY = 'theme';
 const HIDE_UNINTERESTING_KEY = 'hideUninteresting';
 
-// Section visibility state: 0 = both, 1 = sources only, 2 = topics only
+// Section visibility state: 0 = all, 1 = sources only, 2 = topics only, 3 = breaking (Eilmeldungen) only
 let sectionVisibilityState = parseInt(localStorage.getItem(SECTION_VISIBILITY_KEY) || '0');
 
 // Currently active filter value (null = no filter)
@@ -52,11 +52,22 @@ function toggleTheme() {
 async function trackClickFollow(event, link, lid, rating) {
   event.preventDefault();
   const href = link.href;
+  // Auto-Bewertung: ein Klick gilt als "angesehen" und vergibt automatisch 3 Sterne
+  // (außer es existiert bereits eine manuelle Sternebewertung).
+  const ratings = loadStarRatings();
+  const stars = (ratings[lid] !== undefined) ? parseInt(ratings[lid], 10) : 3;
   try {
     const uid = getUidFromPath();
-    await fetch(`${window.location.pathname}/clicktrack?lid=${lid}&rating=${rating}`, {
+    await fetch(`${window.location.pathname}/clicktrack?lid=${lid}&rating=${rating}&stars=${stars}`, {
       method: 'GET',
     });
+    // Vorhandenes Stern-Widget anzeigen (3 Sterne voll), falls noch keins gesetzt
+    const container = starContainerForLid(lid);
+    if (container && !(ratings[lid])) {
+      ratings[lid] = 3;
+      saveStarRatings(ratings);
+      renderStars(container, 3);
+    }
     window.location.href = href;
   } catch (error) {
     console.error('Error tracking click:', error);
@@ -483,13 +494,14 @@ function extractHoursAgo(item) {
 function cycleSectionVisibility() {
   const sourcesSection = document.getElementById('sources-section');
   const topicsSection = document.getElementById('topics-section');
-  const sourcesSeparator = document.querySelector('.separator');
-  const topicsSeparator = document.querySelectorAll('.separator')[1];
+  const breakingSection = document.getElementById('eilmeldungen-section');
   
+  // All three sections must exist to cycle; if the breaking section is absent
+  // (e.g. backend doesn't provide it), still degrade gracefully on the others.
   if (!sourcesSection || !topicsSection) return;
   
-  // Cycle through states: 0 -> 1 -> 2 -> 0
-  sectionVisibilityState = (sectionVisibilityState + 1) % 3;
+  // Cycle through states: 0 -> 1 -> 2 -> 3 -> 0
+  sectionVisibilityState = (sectionVisibilityState + 1) % 4;
   
   // Save state to localStorage
   localStorage.setItem(SECTION_VISIBILITY_KEY, sectionVisibilityState.toString());
@@ -501,29 +513,43 @@ function cycleSectionVisibility() {
 function applySectionVisibility() {
   const sourcesSection = document.getElementById('sources-section');
   const topicsSection = document.getElementById('topics-section');
-  const sourcesSeparator = document.querySelector('.separator');
-  const topicsSeparator = document.querySelectorAll('.separator')[1];
+  const breakingSection = document.getElementById('eilmeldungen-section');
+  // Address the three section separators directly by explicit IDs (robust
+  // against any other elements sharing the generic .separator class).
+  const sourcesSeparator = document.getElementById('sources-separator');
+  const topicsSeparator = document.getElementById('topics-separator');
+  const breakingSeparator = document.getElementById('eilmeldungen-separator');
   
   if (!sourcesSection || !topicsSection) return;
   
+  // Helper to set visibility of a section + its separator together.
+  const setSectionVisible = (section, separator, visible) => {
+    if (section) section.style.display = visible ? '' : 'none';
+    if (separator) separator.style.display = visible ? '' : 'none';
+  };
+  
+  const breakingPresent = !!breakingSection;
+  
   switch(sectionVisibilityState) {
-    case 0: // Both visible
-      sourcesSection.style.display = '';
-      topicsSection.style.display = '';
-      if (sourcesSeparator) sourcesSeparator.style.display = '';
-      if (topicsSeparator) topicsSeparator.style.display = '';
+    case 0: // All visible (Sources + Topics + Eilmeldungen)
+      setSectionVisible(sourcesSection, sourcesSeparator, true);
+      setSectionVisible(topicsSection, topicsSeparator, true);
+      setSectionVisible(breakingSection, breakingSeparator, breakingPresent);
       break;
     case 1: // Sources only
-      sourcesSection.style.display = '';
-      topicsSection.style.display = 'none';
-      if (sourcesSeparator) sourcesSeparator.style.display = '';
-      if (topicsSeparator) topicsSeparator.style.display = 'none';
+      setSectionVisible(sourcesSection, sourcesSeparator, true);
+      setSectionVisible(topicsSection, topicsSeparator, false);
+      setSectionVisible(breakingSection, breakingSeparator, false);
       break;
     case 2: // Topics only
-      sourcesSection.style.display = 'none';
-      topicsSection.style.display = '';
-      if (sourcesSeparator) sourcesSeparator.style.display = 'none';
-      if (topicsSeparator) topicsSeparator.style.display = '';
+      setSectionVisible(sourcesSection, sourcesSeparator, false);
+      setSectionVisible(topicsSection, topicsSeparator, true);
+      setSectionVisible(breakingSection, breakingSeparator, false);
+      break;
+    case 3: // Eilmeldungen only
+      setSectionVisible(sourcesSection, sourcesSeparator, false);
+      setSectionVisible(topicsSection, topicsSeparator, false);
+      setSectionVisible(breakingSection, breakingSeparator, breakingPresent);
       break;
   }
   
@@ -581,7 +607,10 @@ function updateMarkAsReadButtonVisibility(detailsElement) {
 }
 
 function updateHeaderStats() {
-  // Only count items in the Sources section to avoid double counting
+  // Only count items in the Sources section to avoid double counting.
+  // Breaking (Eilmeldungen) items are deliberately NOT added here: they may
+  // also appear inside the Quellen/Themen sections, so counting the
+  // #eilmeldungen-section would double-count them in the global header.
   const sourcesSection = document.getElementById('sources-section');
   if (!sourcesSection) return;
   
@@ -784,6 +813,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Initialize uninteresting entries visibility
   initUninterestingVisibility();
+
+  // Restore previously assigned star ratings
+  restoreStarRatings();
 });
 
 
@@ -1005,8 +1037,8 @@ function buildSettingsForm(payload) {
         </tr>`).join('')
     : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);font-size:12px;">Keine Feeds. Fügen Sie mindestens einen hinzu.</td></tr>';
 
-  const check = (k, label) =>
-    `<label class="check-row"><input type="checkbox" id="g_${k}" ${g[k] ? 'checked' : ''}> ${label}</label>`;
+  const check = (k, label, title) =>
+    `<label class="check-row"${title ? ` title="${title}"` : ''}><input type="checkbox" id="g_${k}"${title ? ` title="${title}"` : ''} ${g[k] ? 'checked' : ''}> ${label}</label>`;
 
   return `
     <div class="settings-section">
@@ -1045,35 +1077,35 @@ function buildSettingsForm(payload) {
     <details class="settings-section">
       <summary>Globale Einstellungen</summary>
       <div class="settings-section">
-        <label>LIMIT (max. Feeds pro Lauf)</label>
-        <input id="g_LIMIT" class="wide-number" type="number" min="1" step="1" value="${escapeHtml(g.LIMIT)}">
-        <label>HOURS_BACK (Zeitfenster in Stunden)</label>
-        <input id="g_HOURS_BACK" class="wide-number" type="number" min="1" step="1" value="${escapeHtml(g.HOURS_BACK)}">
-        <label>SOURCE_FILTER (Quellen, Komma-getrennt; leer = alle)</label>
-        <input id="g_SOURCE_FILTER" type="text" value="${escapeHtml(Array.isArray(g.SOURCE_FILTER) ? g.SOURCE_FILTER.join(', ') : '')}">
-        <label>CRONTRIGGER (E-Mail-Zeit, HH:MM)</label>
+        <label title="Maximale Anzahl Artikel pro Abschnitt/Sektion.">LIMIT (max. Feeds pro Lauf)</label>
+        <input id="g_LIMIT" class="wide-number" type="number" min="1" step="1" value="${escapeHtml(g.LIMIT)}" title="Maximale Anzahl Artikel pro Abschnitt/Sektion.">
+        <label title="Standard-Zeitfenster in Stunden: nur Artikel, die nicht älter als dieser Wert sind, werden angezeigt.">HOURS_BACK (Zeitfenster in Stunden)</label>
+        <input id="g_HOURS_BACK" class="wide-number" type="number" min="1" step="1" value="${escapeHtml(g.HOURS_BACK)}" title="Standard-Zeitfenster in Stunden — nur Artikel, die nicht älter als dieser Wert sind, werden angezeigt.">
+        <label title="Nur diese Quellen (Komma-getrennt) berücksichtigen; leer = alle Quellen.">SOURCE_FILTER (Quellen, Komma-getrennt; leer = alle)</label>
+        <input id="g_SOURCE_FILTER" type="text" value="${escapeHtml(Array.isArray(g.SOURCE_FILTER) ? g.SOURCE_FILTER.join(', ') : '')}" title="Nur diese Quellen (Komma-getrennt) berücksichtigen; leer = alle Quellen.">
+        <label title="Uhrzeit (HH:MM), zu der E-Mails versendet werden.">CRONTRIGGER (E-Mail-Zeit, HH:MM)</label>
         <div style="display:flex;align-items:center;gap:4px;">
-          <input id="g_CRONTRIGGER_hour" class="small-number" type="text" value="${escapeHtml((g.CRONTRIGGER && g.CRONTRIGGER.hour) || '')}">
+          <input id="g_CRONTRIGGER_hour" class="small-number" type="text" value="${escapeHtml((g.CRONTRIGGER && g.CRONTRIGGER.hour) || '')}" title="Stunde (0–23) für den E-Mail-Versand.">
           <span>:</span>
-          <input id="g_CRONTRIGGER_minute" class="small-number" type="text" value="${escapeHtml((g.CRONTRIGGER && g.CRONTRIGGER.minute) || '')}">
+          <input id="g_CRONTRIGGER_minute" class="small-number" type="text" value="${escapeHtml((g.CRONTRIGGER && g.CRONTRIGGER.minute) || '')}" title="Minute (0–59) für den E-Mail-Versand.">
         </div>
-        ${check('ENABLE_HIDE_UNREAD', 'Hide-Unread-Buttons anzeigen')}
-        ${check('DEPLOY_MANIFEST', 'PWA-Manifest ausliefern')}
-        ${check('ML_TAG_ENABLED', 'ML-Tagging aktivieren')}
-        <label>ML_TAG_THRESHOLD (0–1)</label>
-        <input id="g_ML_TAG_THRESHOLD" class="wide-number" type="number" min="0" max="1" step="0.01" value="${escapeHtml(g.ML_TAG_THRESHOLD)}">
+        ${check('ENABLE_HIDE_UNREAD', 'Hide-Unread-Buttons anzeigen', 'Ein/Aus: blendet die „Ungelesene ausblenden“-Buttons in der Artikelansicht ein bzw. aus.')}
+        ${check('DEPLOY_MANIFEST', 'PWA-Manifest ausliefern', 'Ein/Aus: ob das PWA-Manifest (Web-App-Installation) ausgeliefert wird.')}
+        ${check('ML_TAG_ENABLED', 'ML-Tagging aktivieren', 'Ein/Aus: markiert Artikel, die dein KI-Modell als ähnlich zu deinen Lesegewohnheiten einschätzt (getagmt mit 💡). Aus = keine Empfehlungs-Tags.')}
+        <label title="Konfidenzschwelle (0–1): Nur Artikel, deren KI-Wahrscheinlichkeit diesen Wert überschreitet, werden mit 💡 markiert. Höher = treffsicherer, aber weniger Treffer; niedriger = mehr Treffer, mehr Rauschen.">ML_TAG_THRESHOLD (0–1)</label>
+        <input id="g_ML_TAG_THRESHOLD" class="wide-number" type="number" min="0" max="1" step="0.01" value="${escapeHtml(g.ML_TAG_THRESHOLD)}" title="Konfidenzschwelle (0–1): Nur Artikel, deren KI-Wahrscheinlichkeit diesen Wert überschreitet, werden mit 💡 markiert. Höher = treffsicherer, aber weniger Treffer; niedriger = mehr Treffer, mehr Rauschen.">
         <label>PAYWALL_SCORE_THRESHOLD (0–100)</label>
-        <input id="g_PAYWALL_SCORE_THRESHOLD" class="wide-number" type="number" min="0" max="100" step="1" value="${escapeHtml(g.PAYWALL_SCORE_THRESHOLD)}">
+        <input id="g_PAYWALL_SCORE_THRESHOLD" class="wide-number" type="number" min="0" max="100" step="1" value="${escapeHtml(g.PAYWALL_SCORE_THRESHOLD)}" title="Ab welchem Score (0–100) ein Artikel als Paywall erkannt und gekennzeichnet wird.">
         <label>PAYWALL_REQUEST_TIMEOUT_SECONDS</label>
-        <input id="g_PAYWALL_REQUEST_TIMEOUT_SECONDS" class="wide-number" type="number" min="1" step="1" value="${escapeHtml(g.PAYWALL_REQUEST_TIMEOUT_SECONDS)}">
+        <input id="g_PAYWALL_REQUEST_TIMEOUT_SECONDS" class="wide-number" type="number" min="1" step="1" value="${escapeHtml(g.PAYWALL_REQUEST_TIMEOUT_SECONDS)}" title="Maximale Wartezeit (Sekunden) pro Paywall-Check, bevor abgebrochen wird. Zu kurz = Fehlalarme, zu lang = träge Updates.">
         <label>PAYWALL_REQUEST_RETRIES</label>
-        <input id="g_PAYWALL_REQUEST_RETRIES" class="small-number" type="number" min="0" step="1" value="${escapeHtml(g.PAYWALL_REQUEST_RETRIES)}">
+        <input id="g_PAYWALL_REQUEST_RETRIES" class="small-number" type="number" min="0" step="1" value="${escapeHtml(g.PAYWALL_REQUEST_RETRIES)}" title="Wie oft ein fehlgeschlagener Paywall-Check wiederholt wird.">
         <label>ML_RETRAIN_THRESHOLD_BYTES</label>
-        <input id="g_ML_RETRAIN_THRESHOLD_BYTES" class="wide-number" type="number" min="0" step="1" value="${escapeHtml(g.ML_RETRAIN_THRESHOLD_BYTES)}">
+        <input id="g_ML_RETRAIN_THRESHOLD_BYTES" class="wide-number" type="number" min="0" step="1" value="${escapeHtml(g.ML_RETRAIN_THRESHOLD_BYTES)}" title="Ab welcher Größe der Klickdatei (Bytes) das KI-Modell neu trainiert wird. Erst dann entstehen 💡-Empfehlungen.">
         <label>ML_NEGATIVE_WEIGHT</label>
-        <input id="g_ML_NEGATIVE_WEIGHT" class="wide-number" type="number" min="0" step="0.01" value="${escapeHtml(g.ML_NEGATIVE_WEIGHT)}">
+        <input id="g_ML_NEGATIVE_WEIGHT" class="wide-number" type="number" min="0" step="0.01" value="${escapeHtml(g.ML_NEGATIVE_WEIGHT)}" title="Gewichtung der Negativ-Beispiele (als uninteressant markierte): 1.0 = balanciert, &gt;1.0 = mehr Präzision (weniger falsche Treffer), &lt;1.0 = mehr Recall (findet mehr, mehr Rauschen).">
         <label>ML_NEGATIVE_CAP_MULTIPLIER</label>
-        <input id="g_ML_NEGATIVE_CAP_MULTIPLIER" class="wide-number" type="number" min="0" step="0.1" value="${escapeHtml(g.ML_NEGATIVE_CAP_MULTIPLIER)}">
+        <input id="g_ML_NEGATIVE_CAP_MULTIPLIER" class="wide-number" type="number" min="0" step="0.1" value="${escapeHtml(g.ML_NEGATIVE_CAP_MULTIPLIER)}" title="MAXIMUM der Negativ-Beispiele beim Training: maximal dieses Vielfache der Positiv-Beispiele (Deckel gegen zu großes Training).">
       </div>
     </details>`;
 }
@@ -1203,3 +1235,96 @@ async function pollRenderStatus() {
 }
 
 document.addEventListener('DOMContentLoaded', pollRenderStatus);
+
+// ---------------------------------------------------------------------------
+// Anleitung (📖) overlay — show/hide the static help description
+// ---------------------------------------------------------------------------
+
+function toggleAnleitung() {
+  const overlay = document.getElementById('anleitung-overlay');
+  if (!overlay) return;
+  overlay.hidden = !overlay.hidden;
+}
+
+function closeAnleitung() {
+  const overlay = document.getElementById('anleitung-overlay');
+  if (overlay) overlay.hidden = true;
+}
+
+// Close the Anleitung overlay with the Escape key (mirrors typical overlay UX).
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const overlay = document.getElementById('anleitung-overlay');
+    if (overlay && !overlay.hidden) overlay.hidden = true;
+  }
+});
+
+// ========== Star Rating (Bewertung) ==========
+// Klick auf einen Stern bewertet den Artikel mit 1-5 Sternen und sendet das an
+// den Backend-/clicktrack-Endpunkt. Mehr Sterne = stärkeres positives ML-Signal
+// (ähnliche Artikel bekommen eher die 💡-Markierung). Ein Klick auf den Artikel
+// selbst vergibt automatisch 3 Sterne (siehe trackClickFollow).
+const STAR_RATING_KEY = 'nfmStarRatings';   // lid -> stars (lokale Anzeige)
+
+function loadStarRatings() {
+  try {
+    return JSON.parse(localStorage.getItem(STAR_RATING_KEY) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveStarRatings(ratings) {
+  try {
+    localStorage.setItem(STAR_RATING_KEY, JSON.stringify(ratings));
+  } catch (e) {
+    console.warn('Could not persist star ratings:', e);
+  }
+}
+
+function renderStars(container, count) {
+  if (!container) return;
+  container.querySelectorAll('.star').forEach(star => {
+    const val = parseInt(star.dataset.val, 10);
+    star.classList.toggle('filled', val <= count);
+    star.textContent = val <= count ? '★' : '☆';
+  });
+}
+
+function starContainerForLid(lid) {
+  return document.querySelector(`.star-rating[data-lid="${lid}"]`);
+}
+
+async function rateStar(event, starEl, lid) {
+  event.preventDefault();
+  event.stopPropagation();
+  const count = parseInt(starEl.dataset.val, 10);
+  const container = starEl.closest('.star-rating');
+
+  // Lokal sofort aktualisieren
+  const ratings = loadStarRatings();
+  ratings[lid] = count;
+  saveStarRatings(ratings);
+  renderStars(container, count);
+
+  // An das Backend senden (rating=1 => positiv, mit Sterneanzahl als Gewicht)
+  try {
+    const uid = getUidFromPath();
+    await fetch(`${window.location.pathname}/clicktrack?lid=${lid}&rating=1&stars=${count}`, {
+      method: 'GET',
+    });
+  } catch (error) {
+    console.error('Error rating article:', error);
+  }
+}
+
+// Bei Initialisierung bereits vergebene Sterne wiederherstellen
+function restoreStarRatings() {
+  const ratings = loadStarRatings();
+  document.querySelectorAll('.star-rating').forEach(container => {
+    const lid = container.dataset.lid;
+    if (lid && ratings[lid]) {
+      renderStars(container, parseInt(ratings[lid], 10));
+    }
+  });
+}

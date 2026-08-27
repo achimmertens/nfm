@@ -201,8 +201,22 @@ def _build_training_data(uid: str, semantic_model) -> Optional[Tuple[np.ndarray,
             embeddings_cache[lid] = np.asarray(embedding, dtype=np.float32)
         _save_embeddings_cache(uid, embeddings_cache)
 
-    positive_lids = [lid for lid, r in labeled_records.items() if int(r.get("rating", 1)) == 1]
-    negative_lids = [lid for lid, r in labeled_records.items() if int(r.get("rating", 1)) == 0]
+    # Star ratings (0-5) drive the ML signal:
+    #   - rating==0                 -> negative sample ("uninteressant")
+    #   - rating>=1 (clicked, no stars or explicit stars) -> positive sample,
+    #     weighted by how many stars were given (more stars = stronger positive).
+    # Older history without a `stars` field: a click (rating==1) is treated as
+    # the auto-granted default of 3 stars (see feedmgr.clicktrack).
+    positive_lids = []
+    negative_lids = []
+    stars_by_lid = {}
+    for lid, r in labeled_records.items():
+        rating = int(r.get("rating", 1))
+        if rating == 0:
+            negative_lids.append(lid)
+        else:
+            positive_lids.append(lid)
+            stars_by_lid[lid] = int(r.get("stars", 3) or 3)  # default 3 = auto "angesehen"
 
     n_positives_pre, n_negatives_pre = len(positive_lids), len(negative_lids)
 
@@ -222,7 +236,8 @@ def _build_training_data(uid: str, semantic_model) -> Optional[Tuple[np.ndarray,
 
     lids = positive_lids + negative_lids
     X = np.array([embeddings_cache[lid] for lid in lids])
-    y = np.array([int(labeled_records[lid].get("rating", 1)) for lid in lids])
+    # y binary: 1 = positive (any star/click), 0 = negative.
+    y = np.array([1 if lid in stars_by_lid else 0 for lid in lids])
 
     # Base negative weight that equalizes the *total* weight of both classes (i.e. what
     # sklearn's class_weight="balanced" would compute), scaled by config.ML_NEGATIVE_WEIGHT
@@ -231,7 +246,16 @@ def _build_training_data(uid: str, semantic_model) -> Optional[Tuple[np.ndarray,
     # fixed weight like 0.6 barely dents that imbalance and leaves predicted probabilities
     # for true positives far below any reasonable tagging threshold.
     balanced_negative_weight = len(positive_lids) / len(negative_lids)
-    sample_weight = np.where(y == 1, 1.0, balanced_negative_weight * config.ML_NEGATIVE_WEIGHT)
+    sample_weight = np.array([
+        # Positive weight scales with the star rating: 3 stars = 1.0 (auto "angesehen"),
+        # 5 stars = 1.0 + (5-3)*0.5 = 2.0, 1 star = 1.0 - (3-1)*0.5 = 0.5.
+        # More stars -> stronger positive signal, so similar articles are tagged
+        # (💡) with higher probability.
+        (max(0.2, 1.0 + (stars_by_lid[lid] - 3) * 0.5))
+        if lid in stars_by_lid
+        else balanced_negative_weight * config.ML_NEGATIVE_WEIGHT
+        for lid in lids
+    ])
 
     return X, y, sample_weight
 

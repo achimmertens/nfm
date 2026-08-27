@@ -283,10 +283,15 @@ async def send_email(request: Request, uid: str):
 async def clicktrack(uid: str, request: Request):
     lid = request.query_params.get('lid')
     rating = request.query_params.get('rating')
+    stars = request.query_params.get('stars', '3')
     nfu = nfm.get_news_feed_user(uid)
     if nfu:
-        if nfu.clicktrack(lid, int(rating)):
-            logger.info(f"[{uid}] clicktrack: lid {lid} recorded, rating={rating}")
+        try:
+            stars_i = int(stars)
+        except (TypeError, ValueError):
+            stars_i = 3
+        if nfu.clicktrack(lid, int(rating), stars=stars_i):
+            logger.info(f"[{uid}] clicktrack: lid {lid} recorded, rating={rating}, stars={stars_i}")
         else:
             logger.warning(f"[{uid}] clicktrack: lid {lid} not found")
     else:
